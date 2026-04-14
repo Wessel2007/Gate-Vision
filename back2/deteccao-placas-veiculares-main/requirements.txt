@@ -1,0 +1,8 @@
+# Dependências principais do projeto de detecção de placas
+# A instalação será feita em uma etapa posterior (configuração do ambiente).
+
+opencv-python
+ultralytics
+torch
+numpy
+

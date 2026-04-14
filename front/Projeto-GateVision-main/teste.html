@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GateVision - Teste de Deteccao</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e4e4e7;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .container {
+      background: #1a1b23;
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 600px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,.4);
+    }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 14px; margin-bottom: 24px; }
+    .preview-area {
+      background: #12131a;
+      border: 2px dashed #333;
+      border-radius: 12px;
+      min-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 16px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    .preview-area:hover { border-color: #555; }
+    .preview-area img {
+      max-width: 100%;
+      max-height: 300px;
+      object-fit: contain;
+    }
+    .preview-area .placeholder { color: #555; text-align: center; padding: 20px; }
+    .btn-row { display: flex; gap: 10px; margin-bottom: 20px; }
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .2s;
+      flex: 1;
+    }
+    button:hover { opacity: .85; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-upload { background: #2a2b35; color: #e4e4e7; }
+    .btn-detect { background: #1f8b56; color: white; }
+    .result-card {
+      background: #12131a;
+      border-radius: 12px;
+      padding: 20px;
+      display: none;
+    }
+    .result-card.visible { display: block; }
+    .result-card h2 { font-size: 16px; margin-bottom: 12px; color: #aaa; }
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #222;
+    }
+    .result-row:last-child { border-bottom: none; }
+    .result-row span { color: #888; }
+    .result-row strong { font-family: 'Consolas', monospace; font-size: 18px; }
+    .result-row strong.ok { color: #22c55e; }
+    .result-row strong.err { color: #ef4444; }
+    .spinner {
+      display: inline-block;
+      width: 18px; height: 18px;
+      border: 3px solid #333;
+      border-top-color: #1f8b56;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status-msg { text-align: center; padding: 12px; color: #888; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>GateVision - Teste de Deteccao</h1>
+    <p class="sub">Envie uma foto de veiculo para testar a deteccao de placa (sem login)</p>
+
+    <input type="file" id="fileInput" accept="image/*" hidden>
+
+    <div class="preview-area" id="previewArea">
+      <div class="placeholder" id="placeholder">Clique aqui ou no botao abaixo<br>para selecionar uma imagem</div>
+      <img id="preview" style="display:none;">
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-upload" id="btnUpload">Selecionar imagem</button>
+      <button class="btn-detect" id="btnDetect" disabled>Detectar placa</button>
+    </div>
+
+    <div id="statusMsg" class="status-msg"></div>
+
+    <div class="result-card" id="resultCard">
+      <h2>Resultado da Deteccao</h2>
+      <div class="result-row">
+        <span>Placa detectada</span>
+        <strong id="resPlaca">---</strong>
+      </div>
+      <div class="result-row">
+        <span>Confianca</span>
+        <strong id="resConf">---</strong>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BACKEND = "http://localhost:8000"
+
+    const fileInput   = document.getElementById("fileInput")
+    const previewArea = document.getElementById("previewArea")
+    const preview     = document.getElementById("preview")
+    const placeholder = document.getElementById("placeholder")
+    const btnUpload   = document.getElementById("btnUpload")
+    const btnDetect   = document.getElementById("btnDetect")
+    const statusMsg   = document.getElementById("statusMsg")
+    const resultCard  = document.getElementById("resultCard")
+    const resPlaca    = document.getElementById("resPlaca")
+    const resConf     = document.getElementById("resConf")
+
+    previewArea.addEventListener("click", () => fileInput.click())
+    btnUpload.addEventListener("click", () => fileInput.click())
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0]
+      if (!file) return
+      preview.src = URL.createObjectURL(file)
+      preview.style.display = "block"
+      placeholder.style.display = "none"
+      btnDetect.disabled = false
+      resultCard.classList.remove("visible")
+      statusMsg.textContent = ""
+    })
+
+    btnDetect.addEventListener("click", async () => {
+      const file = fileInput.files[0]
+      if (!file) return
+
+      btnDetect.disabled = true
+      statusMsg.innerHTML = '<span class="spinner"></span> Processando imagem com YOLO...'
+      resultCard.classList.remove("visible")
+
+      try {
+        const form = new FormData()
+        form.append("file", file)
+
+        const res = await fetch(`${BACKEND}/api/detect`, { method: "POST", body: form })
+        if (!res.ok) throw new Error(`Servidor retornou ${res.status}`)
+
+        const data = await res.json()
+
+        resultCard.classList.add("visible")
+
+        if (data.placa) {
+          resPlaca.textContent = data.placa
+          resPlaca.className = "ok"
+          resConf.textContent = (data.confianca * 100).toFixed(1) + "%"
+          resConf.className = "ok"
+          statusMsg.textContent = "Placa detectada com sucesso!"
+          statusMsg.style.color = "#22c55e"
+        } else {
+          resPlaca.textContent = "Nenhuma placa encontrada"
+          resPlaca.className = "err"
+          resConf.textContent = "-"
+          resConf.className = "err"
+          statusMsg.textContent = "Nao foi possivel detectar uma placa nesta imagem."
+          statusMsg.style.color = "#ef4444"
+        }
+      } catch (e) {
+        statusMsg.textContent = "Erro: " + e.message
+        statusMsg.style.color = "#ef4444"
+      } finally {
+        btnDetect.disabled = false
+      }
+    })
+  </script>
+</body>
+</html>
