@@ -11,9 +11,13 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PLATES = os.getenv("MODEL_PLATES", str(BASE_DIR / ".." / "back2" / "deteccao-placas-veiculares-main" / "models" / "best.pt"))
-MODEL_CHARS = os.getenv("MODEL_CHARS", str(BASE_DIR / ".." / "back1" / "Projeto_deteccao_caracteres-main" / "train" / "weights" / "best.pt"))
-PORT = int(os.getenv("PORT", "8000"))
+MODEL_PLATES = os.getenv(
+    "MODEL_PLATES",
+    str(BASE_DIR / ".." / "back2" / "deteccao-placas-veiculares-main" / "models" / "best.pt")
+)
+DETECT_CONF  = float(os.getenv("DETECT_CONF",  "0.15"))
+DETECT_IMGSZ = int(os.getenv("DETECT_IMGSZ", "1280"))
+PORT         = int(os.getenv("PORT",          "8000"))
 
 app = FastAPI(title="GateVision API")
 
@@ -27,10 +31,11 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
-    print(f"Loading plate model   : {MODEL_PLATES}")
-    print(f"Loading char model    : {MODEL_CHARS}")
-    load_models(MODEL_PLATES, MODEL_CHARS)
-    print("Models loaded successfully.")
+    print(f"Carregando modelo de placas : {MODEL_PLATES}")
+    print(f"Conf YOLO                   : {DETECT_CONF}")
+    print(f"imgsz                       : {DETECT_IMGSZ}")
+    load_models(MODEL_PLATES, conf=DETECT_CONF, imgsz=DETECT_IMGSZ)
+    print("Modelos carregados com sucesso.")
 
 
 @app.get("/")
@@ -41,8 +46,18 @@ def health():
 @app.post("/api/detect")
 async def detect_plate(file: UploadFile = File(...)):
     image_bytes = await file.read()
-    result = detect(image_bytes)
-    return result
+    result = detect(image_bytes, debug=False)
+
+    placa    = result.get("placa")
+    confianca = result.get("confianca", 0)
+
+    if placa:
+        print(f"[GateVision] Placa detectada : {placa}  (confianca YOLO: {confianca:.2%})")
+    else:
+        print("[GateVision] Nenhuma placa detectada na imagem.")
+
+    # Retorna apenas os campos consumidos pelo frontend
+    return {"placa": placa, "confianca": confianca}
 
 
 if __name__ == "__main__":
