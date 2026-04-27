@@ -19,7 +19,8 @@ const APP = {
   lastDecision:        null,
   charts:              { timeline: null, distribution: null },
   dashboardFilterDays: 7,
-  _dashboardCache:     null
+  _dashboardCache:     null,
+  webcamStream:        null
 }
 
 // ── Utilidades ────────────────────────────────────────────────
@@ -299,6 +300,108 @@ async function detectPlateFromImage(file) {
     console.error("detectPlateFromImage:", e)
     await renderView()
   }
+}
+
+// ── Webcam ─────────────────────────────────────────────────────
+
+function _webcamShowVideo() {
+  const video       = document.getElementById("webcamVideo")
+  const previewWrap = document.getElementById("imgPreviewWrap")
+  const placeholder = document.getElementById("cameraPlaceholder")
+  if (video)       { video.style.display       = "block" }
+  if (previewWrap) { previewWrap.style.display  = "none"  }
+  if (placeholder) { placeholder.style.display  = "none"  }
+}
+
+function _webcamShowPlaceholder() {
+  const video       = document.getElementById("webcamVideo")
+  const previewWrap = document.getElementById("imgPreviewWrap")
+  const placeholder = document.getElementById("cameraPlaceholder")
+  if (video)       { video.style.display       = "none"  }
+  if (previewWrap) { previewWrap.style.display  = "none"  }
+  if (placeholder) { placeholder.style.display  = ""      }
+}
+
+async function startWebcam() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast("Seu navegador nao suporta acesso a webcam.")
+    return
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+    APP.webcamStream = stream
+
+    const video = document.getElementById("webcamVideo")
+    if (!video) return
+    video.srcObject = stream
+
+    _webcamShowVideo()
+
+    const btnStart  = document.getElementById("btnStartWebcam")
+    const btnDetect = document.getElementById("btnDetectWebcam")
+    const btnStop   = document.getElementById("btnStopWebcam")
+    if (btnStart)  { btnStart.disabled = true }
+    if (btnDetect) { btnDetect.disabled = false }
+    if (btnStop)   { btnStop.style.display = "" }
+  } catch (err) {
+    const msg = err.name === "NotAllowedError"
+      ? "Permissao de camera negada. Permita o acesso no navegador."
+      : err.name === "NotFoundError"
+        ? "Nenhuma camera encontrada no dispositivo."
+        : "Erro ao acessar a webcam: " + err.message
+    showToast(msg)
+  }
+}
+
+function stopWebcam() {
+  if (APP.webcamStream) {
+    APP.webcamStream.getTracks().forEach(t => t.stop())
+    APP.webcamStream = null
+  }
+  const video = document.getElementById("webcamVideo")
+  if (video) { video.srcObject = null }
+
+  _webcamShowPlaceholder()
+
+  const btnStart  = document.getElementById("btnStartWebcam")
+  const btnDetect = document.getElementById("btnDetectWebcam")
+  const btnStop   = document.getElementById("btnStopWebcam")
+  if (btnStart)  { btnStart.disabled = false }
+  if (btnDetect) { btnDetect.disabled = true }
+  if (btnStop)   { btnStop.style.display = "none" }
+}
+
+async function captureAndDetectWebcam() {
+  const video = document.getElementById("webcamVideo")
+  if (!video || !APP.webcamStream) {
+    showToast("Webcam nao esta ativa.")
+    return
+  }
+  const canvas  = document.createElement("canvas")
+  canvas.width  = video.videoWidth  || 640
+  canvas.height = video.videoHeight || 480
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height)
+
+  canvas.toBlob(async blob => {
+    if (!blob) { showToast("Erro ao capturar frame da webcam."); return }
+    const file = new File([blob], "webcam_frame.jpg", { type: "image/jpeg" })
+
+    const preview     = document.getElementById("imgPreview")
+    const previewWrap = document.getElementById("imgPreviewWrap")
+    const webcamVideo = document.getElementById("webcamVideo")
+    if (preview && previewWrap) {
+      preview.src = URL.createObjectURL(file)
+      previewWrap.style.display = "block"
+    }
+    if (webcamVideo) { webcamVideo.style.display = "none" }
+
+    stopWebcam()
+
+    const btnDetect = document.getElementById("btnDetectWebcam")
+    if (btnDetect) { btnDetect.disabled = true; btnDetect.textContent = "Detectando..." }
+
+    await detectPlateFromImage(file)
+  }, "image/jpeg", 0.92)
 }
 
 async function openGateManual() {
@@ -756,8 +859,9 @@ function renderMonitorPorteiro() {
             <div id="imgPreviewWrap" style="display:none;width:100%;height:100%;overflow:hidden;">
               <img id="imgPreview" style="width:100%;height:100%;object-fit:contain;" />
             </div>
+            <video id="webcamVideo" class="webcam-video" style="display:none;" autoplay playsinline muted></video>
             <div id="cameraPlaceholder">
-              Envie uma foto do veiculo ou<br>digite a placa manualmente
+              Envie uma foto, use a webcam<br>ou digite a placa manualmente
             </div>
           </div>
           <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
@@ -766,8 +870,13 @@ function renderMonitorPorteiro() {
           </div>
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
             <input type="file" id="imageInput" accept="image/*" style="display:none;">
-            <button id="btnUpload" class="btn" style="flex:1;">Enviar foto do veiculo</button>
-            <button id="btnDetectImage" class="btn primary" style="flex:1;" disabled>Detectar placa na foto</button>
+            <button id="btnUpload" class="btn" style="flex:1;">Enviar foto</button>
+            <button id="btnDetectImage" class="btn primary" style="flex:1;" disabled>Detectar na foto</button>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+            <button id="btnStartWebcam" class="btn" style="flex:1;">Usar webcam</button>
+            <button id="btnDetectWebcam" class="btn primary" style="flex:1;" disabled>Detectar pela webcam</button>
+            <button id="btnStopWebcam" class="btn err" style="display:none;">Parar webcam</button>
           </div>
         </div>
       </div>
@@ -1005,6 +1114,12 @@ async function renderView() {
   }
   document.getElementById("viewTitle").textContent = titleMap[APP.currentView] || "Painel"
 
+  // Libera a câmera se o usuário sair da tela de monitor
+  if (APP.webcamStream && APP.currentView !== "monitor") {
+    APP.webcamStream.getTracks().forEach(t => t.stop())
+    APP.webcamStream = null
+  }
+
   const vc = document.getElementById("viewContainer")
 
   if (APP.currentView !== "monitor") {
@@ -1203,6 +1318,14 @@ function bindViewActions() {
       await detectPlateFromImage(file)
     })
   }
+
+  // ── Monitor: webcam
+  const btnStartWebcam  = document.getElementById("btnStartWebcam")
+  const btnDetectWebcam = document.getElementById("btnDetectWebcam")
+  const btnStopWebcam   = document.getElementById("btnStopWebcam")
+  if (btnStartWebcam)  { btnStartWebcam.addEventListener("click",  () => startWebcam()) }
+  if (btnDetectWebcam) { btnDetectWebcam.addEventListener("click", () => captureAndDetectWebcam()) }
+  if (btnStopWebcam)   { btnStopWebcam.addEventListener("click",   () => stopWebcam()) }
 
   // ── Monitor: abrir/negar portao
   const btnOpen = document.getElementById("btnOpenGate")

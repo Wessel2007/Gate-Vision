@@ -217,6 +217,12 @@ th {
   text-align: center;
   padding: 10px;
 }
+.webcam-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 10px;
+}
 .status-box {
   border: 1px solid #d8d4cd;
   border-radius: 10px;
