@@ -1,17 +1,21 @@
 """
 pipeline.py — detecção de placa (YOLO) + OCR (EasyOCR) com suporte a debug.
 
-Melhorias para uso em produção (portaria / câmera):
-  - CLAHE aplicado na imagem inteira antes do YOLO para lidar com variações
-    de iluminação (noite, chuva, contraluz, garagem).
-  - augment=True ativa Test-Time Augmentation no YOLO (multi-escala/flip),
-    aumentando a confiança em posições e distâncias variadas.
-  - Segunda passagem com confiança reduzida quando a primeira não detecta nada.
-  - Fallback de região central fixo REMOVIDO: posição da placa é imprevisível
-    em câmera real (motos, caminhões, diferentes alturas de veículo).
+Fluxo padrão (modo rápido):
+  1. CLAHE na imagem inteira.
+  2. YOLO sem TTA (augment=False) — inferência mais rápida.
+  3. OCR na variante "color" do melhor crop apenas.
+  4. Se não encontrar placa válida → OCR nas variantes "clahe" e "binary".
+  5. Se ainda não encontrar → nova inferência YOLO com TTA + confiança reduzida.
+  6. Repete OCR completo no novo crop.
+
+Parâmetros controláveis por env var / load_models():
+  DETECT_CONF   — limiar de confiança YOLO (padrão: 0.25)
+  DETECT_IMGSZ  — tamanho de entrada YOLO (padrão: 640)
 """
 
 import re
+import time
 import cv2
 import numpy as np
 from pathlib import Path
@@ -19,16 +23,19 @@ from ultralytics import YOLO
 
 _model_plates = None
 _ocr_reader = None
-_detect_conf = 0.15
-_detect_imgsz = 1280
+_detect_conf = 0.25   # padrão mais alto → menos detecções falsas na passagem rápida
+_detect_imgsz = 640   # padrão 640 → inferência ~2× mais rápida que 1280
 
 _OCR_IGNORE = {"BRASIL", "BR", "MERCOSUL", "BRAZIL"}
+
+# Score mínimo para aceitar resultado e encerrar cedo o OCR
+_EARLY_STOP_SCORE = 180
 
 
 # ── Inicialização ──────────────────────────────────────────────
 
 def load_models(plates_path: str, chars_path: str = None,
-                conf: float = 0.15, imgsz: int = 1280):
+                conf: float = 0.25, imgsz: int = 640):
     """Carrega modelo YOLO de placas e leitor EasyOCR.
 
     chars_path é aceito por compatibilidade mas ignorado.
@@ -52,12 +59,7 @@ def load_models(plates_path: str, chars_path: str = None,
 # ── Pré-processamento da imagem inteira (antes do YOLO) ────────
 
 def _enhance_full_image(img: np.ndarray) -> np.ndarray:
-    """Equalização adaptativa de contraste (CLAHE) no canal L do espaço LAB.
-
-    Melhora detecção em cenas com iluminação irregular:
-    garagens escuras, contraluz, noite, chuva, faróis.
-    Não altera matiz nem saturação — apenas contraste local.
-    """
+    """Equalização adaptativa de contraste (CLAHE) no canal L do espaço LAB."""
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
@@ -144,7 +146,6 @@ def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, in
 
     candidates: dict[str, int] = {}
 
-    # Hits individuais recebem bônus alto (×60): hit direto é o melhor candidato
     for text, conf in ocr_hits:
         if 4 <= len(text) <= 10:
             corrected = _correct_mercosul(text)
@@ -152,7 +153,6 @@ def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, in
             if corrected not in candidates or sc > candidates[corrected]:
                 candidates[corrected] = sc
 
-    # Janelas deslizantes de 7 chars como fallback (bônus menor ×30)
     conf_map: list[tuple[str, float]] = []
     for text, conf in ocr_hits:
         for ch in text:
@@ -172,19 +172,60 @@ def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, in
     return sorted(candidates.items(), key=lambda x: x[1], reverse=True)
 
 
-# ── Detecção YOLO (com TTA e dois passes) ─────────────────────
+# ── OCR com parada antecipada (variante a variante) ────────────
 
-def _run_yolo(img: np.ndarray) -> list[tuple]:
-    """Roda YOLO com augment=True (TTA). Se não encontrar nada, repete com
-    confiança reduzida para cobrir casos difíceis (distância, ângulo, luz baixa).
-    Retorna lista de (box_r, box) prontos para processar.
+def _ocr_crop_fast(crop: np.ndarray, debug_variants: dict | None = None
+                   ) -> tuple[list[tuple[str, float]], bool]:
+    """Roda OCR variante a variante; para assim que encontrar placa válida.
+
+    Retorna (all_hits, found_early) onde found_early=True significa que a
+    parada antecipada foi acionada antes de processar todas as variantes.
     """
+    variants = _make_variants(crop)
+    # Ordem de preferência: color primeiro (melhor relação qualidade/tempo)
+    order = ["color", "clahe", "binary"]
+
+    all_hits: list[tuple[str, float]] = []
+    found_early = False
+
+    for vname in order:
+        variant = variants[vname]
+        hits = _run_ocr(variant)
+        all_hits.extend(hits)
+
+        if debug_variants is not None:
+            debug_variants[vname] = {"img": variant, "hits": hits}
+
+        candidates = _extract_candidates(all_hits)
+        if candidates and candidates[0][1] >= _EARLY_STOP_SCORE:
+            found_early = True
+            # preencher variantes restantes no debug como não processadas
+            if debug_variants is not None:
+                for remaining in order:
+                    if remaining not in debug_variants:
+                        debug_variants[remaining] = {"img": variants[remaining],
+                                                     "hits": [], "skipped": True}
+            break
+
+    return all_hits, found_early
+
+
+# ── Inferência YOLO ────────────────────────────────────────────
+
+def _run_yolo_fast(img: np.ndarray) -> list[tuple]:
+    """Inferência rápida: sem TTA, confiança padrão."""
+    results = _model_plates(img, conf=_detect_conf, imgsz=_detect_imgsz,
+                             augment=False, verbose=False)
+    return [(r, box) for r in results for box in r.boxes]
+
+
+def _run_yolo_robust(img: np.ndarray) -> list[tuple]:
+    """Inferência robusta: com TTA e confiança reduzida — usada como fallback."""
     results = _model_plates(img, conf=_detect_conf, imgsz=_detect_imgsz,
                              augment=True, verbose=False)
     detections = [(r, box) for r in results for box in r.boxes]
 
     if not detections:
-        # Segunda passagem com confiança reduzida
         fallback_conf = max(0.04, _detect_conf / 3)
         results = _model_plates(img, conf=fallback_conf, imgsz=_detect_imgsz,
                                  augment=True, verbose=False)
@@ -193,52 +234,29 @@ def _run_yolo(img: np.ndarray) -> list[tuple]:
     return detections
 
 
-# ── Detecção principal ─────────────────────────────────────────
+# ── Processar um conjunto de detecções YOLO → melhor placa ─────
 
-def detect(image_bytes: bytes, debug: bool = False) -> dict:
-    """Pipeline completo: pré-processamento → YOLO (TTA) → OCR Mercosul.
-
-    Retorna {"placa": str|None, "confianca": float, "debug": dict|None}.
-    """
-    if _model_plates is None or _ocr_reader is None:
-        raise RuntimeError("Modelos nao carregados. Chame load_models() primeiro.")
-
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        return {"placa": None, "confianca": 0, "debug": None}
-
-    # Equalização de contraste na imagem inteira antes do YOLO
-    enhanced = _enhance_full_image(img)
-
-    debug_info = {"detections": [], "yolo_passes": 1} if debug else None
-
-    detections = _run_yolo(enhanced)
-
-    if not detections:
-        if debug_info is not None:
-            debug_info["yolo_passes"] = 2
-            debug_info["fallback_used"] = False
-            debug_info["no_detection"] = True
-        return {"placa": None, "confianca": 0, "debug": debug_info}
-
+def _process_detections(detections: list[tuple], img: np.ndarray,
+                         debug_info: dict | None, timings: dict | None
+                         ) -> tuple[str | None, float]:
+    """Itera pelas detecções YOLO, roda OCR e devolve (melhor_placa, conf_yolo)."""
     best_plate = None
     best_conf = 0.0
 
-    for r, box in detections:
+    # Ordenar por confiança YOLO descendente: processar o mais provável primeiro
+    sorted_dets = sorted(detections, key=lambda x: float(x[1].conf[0]), reverse=True)
+
+    for r, box in sorted_dets:
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         plate_conf = float(box.conf[0])
         crop = _safe_crop(img, x1, y1, x2, y2)
 
-        all_hits: list[tuple[str, float]] = []
-        variant_debug = {}
-
-        variants = _make_variants(crop)
-        for vname, variant in variants.items():
-            hits = _run_ocr(variant)
-            all_hits.extend(hits)
-            if debug_info is not None:
-                variant_debug[vname] = {"img": variant, "hits": hits}
+        variant_debug: dict | None = {} if debug_info is not None else None
+        t_ocr = time.perf_counter()
+        all_hits, early = _ocr_crop_fast(crop, variant_debug)
+        if timings is not None:
+            timings.setdefault("ocr_ms", []).append(
+                round((time.perf_counter() - t_ocr) * 1000, 1))
 
         candidates = _extract_candidates(all_hits)
         top_text  = candidates[0][0] if candidates else None
@@ -252,11 +270,79 @@ def detect(image_bytes: bytes, debug: bool = False) -> dict:
                 "variants": variant_debug,
                 "all_hits": all_hits,
                 "candidates": candidates,
+                "early_stop": early,
             })
 
         if top_text and top_score > _score(best_plate or ""):
             best_plate = top_text
             best_conf = plate_conf
+
+        # Se já encontramos placa válida com score alto, não processar mais caixas
+        if best_plate and _score(best_plate) >= _EARLY_STOP_SCORE:
+            break
+
+    return best_plate, best_conf
+
+
+# ── Detecção principal ─────────────────────────────────────────
+
+def detect(image_bytes: bytes, debug: bool = False) -> dict:
+    """Pipeline completo: pré-processamento → YOLO (rápido) → OCR Mercosul.
+
+    Modo rápido por padrão:
+      - YOLO sem TTA.
+      - OCR com parada antecipada por placa válida.
+      - Fallback automático para YOLO com TTA se nada encontrado.
+
+    Retorna {"placa": str|None, "confianca": float, "debug": dict|None}.
+    """
+    if _model_plates is None or _ocr_reader is None:
+        raise RuntimeError("Modelos nao carregados. Chame load_models() primeiro.")
+
+    t_total = time.perf_counter()
+    timings: dict = {}
+
+    # Decodificação
+    t0 = time.perf_counter()
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    timings["decode_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+    if img is None:
+        return {"placa": None, "confianca": 0, "debug": None}
+
+    # CLAHE
+    t0 = time.perf_counter()
+    enhanced = _enhance_full_image(img)
+    timings["clahe_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+    debug_info = {"detections": [], "yolo_passes": 1, "timings": timings} if debug else None
+
+    # ── Passagem rápida: YOLO sem TTA ─────────────────────────
+    t0 = time.perf_counter()
+    detections = _run_yolo_fast(enhanced)
+    timings["yolo_fast_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+    best_plate = None
+    best_conf = 0.0
+
+    if detections:
+        best_plate, best_conf = _process_detections(detections, img, debug_info, timings)
+
+    # ── Fallback: YOLO com TTA quando placa não encontrada ────
+    if not best_plate:
+        if debug_info is not None:
+            debug_info["yolo_passes"] = 2
+
+        t0 = time.perf_counter()
+        detections_robust = _run_yolo_robust(enhanced)
+        timings["yolo_robust_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+
+        if detections_robust:
+            best_plate, best_conf = _process_detections(
+                detections_robust, img, debug_info, timings)
+
+    timings["total_ms"] = round((time.perf_counter() - t_total) * 1000, 1)
 
     return {
         "placa": best_plate,

@@ -15,8 +15,8 @@ MODEL_PLATES = os.getenv(
     "MODEL_PLATES",
     str(BASE_DIR / ".." / "back2" / "deteccao-placas-veiculares-main" / "models" / "best.pt")
 )
-DETECT_CONF  = float(os.getenv("DETECT_CONF",  "0.15"))
-DETECT_IMGSZ = int(os.getenv("DETECT_IMGSZ", "1280"))
+DETECT_CONF  = float(os.getenv("DETECT_CONF",  "0.25"))
+DETECT_IMGSZ = int(os.getenv("DETECT_IMGSZ", "640"))
 PORT         = int(os.getenv("PORT",          "8000"))
 
 app = FastAPI(title="GateVision API")

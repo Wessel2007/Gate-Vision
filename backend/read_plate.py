@@ -27,18 +27,12 @@ def _save_debug(debug_info: dict, out_dir: Path, img_stem: str):
     import cv2
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if debug_info.get("fallback_used"):
-        region = debug_info.get("fallback_region")
-        if region is not None:
-            cv2.imwrite(str(out_dir / f"{img_stem}_fallback_region.jpg"), region)
-        for vname, vimg in debug_info.get("fallback_variants", {}).items():
-            cv2.imwrite(str(out_dir / f"{img_stem}_fallback_{vname}.jpg"), vimg)
-        return
-
     for idx, det in enumerate(debug_info.get("detections", [])):
         cv2.imwrite(str(out_dir / f"{img_stem}_det{idx}_crop.jpg"), det["crop"])
         for vname, vdata in det.get("variants", {}).items():
-            cv2.imwrite(str(out_dir / f"{img_stem}_det{idx}_{vname}.jpg"), vdata["img"])
+            if not vdata.get("skipped"):
+                cv2.imwrite(str(out_dir / f"{img_stem}_det{idx}_{vname}.jpg"),
+                            vdata["img"])
 
 
 def _print_debug(debug_info: dict):
@@ -47,27 +41,33 @@ def _print_debug(debug_info: dict):
         return
 
     sep = "─" * 60
-
-    if debug_info.get("fallback_used"):
-        print(f"\n{sep}")
-        print("  [DEBUG] YOLO nao detectou placa — usando fallback (regiao central)")
-        for vname, hits in debug_info.get("fallback_hits", {}).items():
-            print(f"    Variante [{vname}] hits OCR: {hits}")
-        cands = debug_info.get("fallback_candidates", [])
-        print(f"    Candidatos: {cands[:5]}")
-        print(sep)
-        return
-
-    detections = debug_info.get("detections", [])
     print(f"\n{sep}")
-    print(f"  [DEBUG] Deteccoes YOLO encontradas: {len(detections)}")
+
+    timings = debug_info.get("timings", {})
+    if timings:
+        print("  [TEMPOS]")
+        for key, val in timings.items():
+            if key == "ocr_ms":
+                print(f"    ocr_ms (por crop): {val}")
+            else:
+                print(f"    {key}: {val} ms")
+
+    yolo_passes = debug_info.get("yolo_passes", 1)
+    detections = debug_info.get("detections", [])
+    print(f"\n  [DEBUG] Passagens YOLO: {yolo_passes} | "
+          f"Deteccoes processadas: {len(detections)}")
+
     for idx, det in enumerate(detections):
         x1, y1, x2, y2 = det["box"]
+        early = det.get("early_stop", False)
         print(f"\n  --- Deteccao #{idx} ---")
         print(f"    Caixa      : ({x1},{y1}) -> ({x2},{y2})")
         print(f"    Conf YOLO  : {det['yolo_conf']:.2%}")
+        print(f"    OCR rapido : {'sim (parada antecipada)' if early else 'nao (todas variantes)'}")
         for vname, vdata in det.get("variants", {}).items():
-            print(f"    OCR [{vname}]: {vdata['hits']}")
+            skipped = vdata.get("skipped", False)
+            hits_info = "(ignorada)" if skipped else str(vdata["hits"])
+            print(f"    OCR [{vname}]: {hits_info}")
         print(f"    Todos hits : {det['all_hits']}")
         cands = det.get("candidates", [])
         print(f"    Candidatos : {cands[:8]}")
@@ -87,14 +87,14 @@ def main():
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.15,
-        help="Limiar de confianca para deteccao YOLO (padrao: 0.15)",
+        default=0.25,
+        help="Limiar de confianca para deteccao YOLO (padrao: 0.25)",
     )
     parser.add_argument(
         "--imgsz",
         type=int,
-        default=1280,
-        help="Tamanho de entrada para o YOLO (padrao: 1280)",
+        default=640,
+        help="Tamanho de entrada para o YOLO (padrao: 640)",
     )
     parser.add_argument(
         "--debug",

@@ -168,10 +168,10 @@ def main():
         default=os.getenv("MODEL_PLATES", DEFAULT_MODEL),
         help="Caminho para o .pt do detector YOLO de placas"
     )
-    parser.add_argument("--conf",   type=float, default=0.15,
-                        help="Limiar de confianca YOLO (padrao: 0.15)")
-    parser.add_argument("--imgsz",  type=int,   default=1280,
-                        help="Tamanho de entrada do YOLO (padrao: 1280)")
+    parser.add_argument("--conf",   type=float, default=0.25,
+                        help="Limiar de confianca YOLO (padrao: 0.25)")
+    parser.add_argument("--imgsz",  type=int,   default=640,
+                        help="Tamanho de entrada do YOLO (padrao: 640)")
     parser.add_argument("--sample-every", type=int, default=5,
                         help="Processar 1 a cada N frames (padrao: 5)")
     parser.add_argument("--confirm", type=int, default=3,
