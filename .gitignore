@@ -1,0 +1,24 @@
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Modelos YOLO (arquivos grandes, não versionar)
+*.pt
+
+# Artefatos de debug gerados pelo CLI
+backend/debug/
+
+# Variáveis de ambiente
+backend/.env
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
