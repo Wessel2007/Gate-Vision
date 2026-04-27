@@ -1,13 +1,14 @@
 """
 pipeline.py — detecção de placa (YOLO) + OCR (EasyOCR) com suporte a debug.
 
-Fluxo:
-  1. YOLO detecta regiões de placa na imagem.
-  2. Cada região é recortada com uma pequena margem.
-  3. Três variantes de pré-processamento são geradas e enviadas ao EasyOCR.
-  4. Os textos retornados são filtrados, combinados em janelas de 7 caracteres
-     e pontuados pelo padrão Mercosul.
-  5. O melhor candidato é retornado junto com dados de debug opcionais.
+Melhorias para uso em produção (portaria / câmera):
+  - CLAHE aplicado na imagem inteira antes do YOLO para lidar com variações
+    de iluminação (noite, chuva, contraluz, garagem).
+  - augment=True ativa Test-Time Augmentation no YOLO (multi-escala/flip),
+    aumentando a confiança em posições e distâncias variadas.
+  - Segunda passagem com confiança reduzida quando a primeira não detecta nada.
+  - Fallback de região central fixo REMOVIDO: posição da placa é imprevisível
+    em câmera real (motos, caminhões, diferentes alturas de veículo).
 """
 
 import re
@@ -21,7 +22,6 @@ _ocr_reader = None
 _detect_conf = 0.15
 _detect_imgsz = 1280
 
-# Textos que aparecem na placa mas não são os dígitos — ignorar
 _OCR_IGNORE = {"BRASIL", "BR", "MERCOSUL", "BRAZIL"}
 
 
@@ -32,8 +32,6 @@ def load_models(plates_path: str, chars_path: str = None,
     """Carrega modelo YOLO de placas e leitor EasyOCR.
 
     chars_path é aceito por compatibilidade mas ignorado.
-    conf: limiar de confiança para detecção YOLO (padrão 0.15).
-    imgsz: tamanho de entrada para o YOLO (padrão 1280).
     """
     global _model_plates, _ocr_reader, _detect_conf, _detect_imgsz
     import easyocr
@@ -51,11 +49,26 @@ def load_models(plates_path: str, chars_path: str = None,
     _detect_imgsz = imgsz
 
 
+# ── Pré-processamento da imagem inteira (antes do YOLO) ────────
+
+def _enhance_full_image(img: np.ndarray) -> np.ndarray:
+    """Equalização adaptativa de contraste (CLAHE) no canal L do espaço LAB.
+
+    Melhora detecção em cenas com iluminação irregular:
+    garagens escuras, contraluz, noite, chuva, faróis.
+    Não altera matiz nem saturação — apenas contraste local.
+    """
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+
 # ── Crop com margem ────────────────────────────────────────────
 
 def _safe_crop(img: np.ndarray, x1: int, y1: int, x2: int, y2: int,
                margin: float = 0.08) -> np.ndarray:
-    """Recorta a bounding box adicionando margem relativa para não cortar bordas."""
     h, w = img.shape[:2]
     mw = int((x2 - x1) * margin)
     mh = int((y2 - y1) * margin)
@@ -66,29 +79,21 @@ def _safe_crop(img: np.ndarray, x1: int, y1: int, x2: int, y2: int,
     return img[y1:y2, x1:x2]
 
 
-# ── Variantes de pré-processamento ─────────────────────────────
+# ── Variantes de pré-processamento do crop ─────────────────────
 
 def _make_variants(crop: np.ndarray) -> dict[str, np.ndarray]:
-    """Retorna três variantes do crop para testar no OCR."""
-    # 1. Colorido ampliado (mais fiel ao original)
     color_up = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-
-    # 2. Cinza + CLAHE (equalização adaptativa — melhora contraste uniforme)
     gray = cv2.cvtColor(color_up, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     clahe_img = clahe.apply(gray)
-
-    # 3. Threshold binário com desfoque leve para limpar ruído
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
     return {"color": color_up, "clahe": clahe_img, "binary": binary}
 
 
 # ── OCR com detalhe ────────────────────────────────────────────
 
 def _run_ocr(img_variant: np.ndarray) -> list[tuple[str, float]]:
-    """Executa EasyOCR com detail=1 e retorna lista de (texto_limpo, confianca)."""
     results = _ocr_reader.readtext(img_variant, detail=1, paragraph=False,
                                    allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
     out = []
@@ -109,13 +114,12 @@ _OLD_RE      = re.compile(r"^[A-Z]{3}[0-9]{4}$")
 
 
 def _correct_mercosul(text: str) -> str:
-    """Aplica correções de confusão letra/dígito por posição (padrão Mercosul)."""
     chars = list(text)
     for i in range(min(7, len(chars))):
-        if i < 3 or i == 4:          # posições de letras
+        if i < 3 or i == 4:
             if chars[i] in _DIGIT_TO_LETTER:
                 chars[i] = _DIGIT_TO_LETTER[chars[i]]
-        else:                         # posições de dígitos
+        else:
             if chars[i] in _LETTER_TO_DIGIT:
                 chars[i] = _LETTER_TO_DIGIT[chars[i]]
     return "".join(chars[:7])
@@ -135,35 +139,20 @@ def _score(text: str) -> int:
 
 
 def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, int]]:
-    """
-    Extrai e pontua candidatos a placa a partir dos hits do OCR.
-
-    Estratégia de prioridade:
-      1. Hits individuais recebem bônus de confiança alto (×60) — um único bloco
-         detectado como a placa é o candidato mais confiável.
-      2. Janelas deslizantes de 7 chars sobre todos os hits concatenados recebem
-         bônus de confiança ponderado menor (×30) — servem de fallback quando o
-         OCR fragmenta a leitura.
-
-    Isso resolve o empate em score base (220) quando vários padrões Mercosul
-    são encontrados: o hit direto com alta confiança vence.
-    """
     if not ocr_hits:
         return []
 
     candidates: dict[str, int] = {}
 
-    # ── 1. Hits individuais (prioridade máxima) ────────────────────────────
+    # Hits individuais recebem bônus alto (×60): hit direto é o melhor candidato
     for text, conf in ocr_hits:
         if 4 <= len(text) <= 10:
             corrected = _correct_mercosul(text)
-            # bônus alto: int(conf * 60) → até +60 pontos
             sc = _score(corrected) + int(conf * 60)
             if corrected not in candidates or sc > candidates[corrected]:
                 candidates[corrected] = sc
 
-    # ── 2. Janelas deslizantes sobre texto concatenado (fallback) ──────────
-    # Monta mapa char→confiança para ponderar cada janela
+    # Janelas deslizantes de 7 chars como fallback (bônus menor ×30)
     conf_map: list[tuple[str, float]] = []
     for text, conf in ocr_hits:
         for ch in text:
@@ -176,7 +165,6 @@ def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, in
             break
         avg_conf = sum(c for _, c in conf_map[start:start + 7]) / 7
         corrected = _correct_mercosul(window)
-        # bônus menor: int(avg_conf * 30) → até +30 pontos
         sc = _score(corrected) + int(avg_conf * 30)
         if corrected not in candidates or sc > candidates[corrected]:
             candidates[corrected] = sc
@@ -184,17 +172,33 @@ def _extract_candidates(ocr_hits: list[tuple[str, float]]) -> list[tuple[str, in
     return sorted(candidates.items(), key=lambda x: x[1], reverse=True)
 
 
+# ── Detecção YOLO (com TTA e dois passes) ─────────────────────
+
+def _run_yolo(img: np.ndarray) -> list[tuple]:
+    """Roda YOLO com augment=True (TTA). Se não encontrar nada, repete com
+    confiança reduzida para cobrir casos difíceis (distância, ângulo, luz baixa).
+    Retorna lista de (box_r, box) prontos para processar.
+    """
+    results = _model_plates(img, conf=_detect_conf, imgsz=_detect_imgsz,
+                             augment=True, verbose=False)
+    detections = [(r, box) for r in results for box in r.boxes]
+
+    if not detections:
+        # Segunda passagem com confiança reduzida
+        fallback_conf = max(0.04, _detect_conf / 3)
+        results = _model_plates(img, conf=fallback_conf, imgsz=_detect_imgsz,
+                                 augment=True, verbose=False)
+        detections = [(r, box) for r in results for box in r.boxes]
+
+    return detections
+
+
 # ── Detecção principal ─────────────────────────────────────────
 
 def detect(image_bytes: bytes, debug: bool = False) -> dict:
-    """Pipeline completo: YOLO + OCR Mercosul.
+    """Pipeline completo: pré-processamento → YOLO (TTA) → OCR Mercosul.
 
-    Retorna:
-        {
-            "placa":    str | None,
-            "confianca": float,          # confiança YOLO
-            "debug":    dict | None      # presente apenas quando debug=True
-        }
+    Retorna {"placa": str|None, "confianca": float, "debug": dict|None}.
     """
     if _model_plates is None or _ocr_reader is None:
         raise RuntimeError("Modelos nao carregados. Chame load_models() primeiro.")
@@ -204,49 +208,23 @@ def detect(image_bytes: bytes, debug: bool = False) -> dict:
     if img is None:
         return {"placa": None, "confianca": 0, "debug": None}
 
-    results = _model_plates(img, conf=_detect_conf, imgsz=_detect_imgsz, verbose=False)
+    # Equalização de contraste na imagem inteira antes do YOLO
+    enhanced = _enhance_full_image(img)
 
-    debug_info = {"detections": [], "fallback_used": False} if debug else None
+    debug_info = {"detections": [], "yolo_passes": 1} if debug else None
+
+    detections = _run_yolo(enhanced)
+
+    if not detections:
+        if debug_info is not None:
+            debug_info["yolo_passes"] = 2
+            debug_info["fallback_used"] = False
+            debug_info["no_detection"] = True
+        return {"placa": None, "confianca": 0, "debug": debug_info}
 
     best_plate = None
     best_conf = 0.0
-    best_candidates = []
 
-    detections = [(r, box) for r in results for box in r.boxes]
-
-    if not detections:
-        # ── Fallback: tenta OCR na região central-inferior da imagem ──────────
-        h, w = img.shape[:2]
-        region = img[int(h * 0.55):int(h * 0.90), int(w * 0.15):int(w * 0.85)]
-        if debug_info is not None:
-            debug_info["fallback_used"] = True
-            debug_info["fallback_region"] = region.copy()
-
-        all_hits: list[tuple[str, float]] = []
-        variants = _make_variants(region)
-        for vname, variant in variants.items():
-            hits = _run_ocr(variant)
-            if debug_info is not None:
-                debug_info.setdefault("fallback_variants", {})[vname] = variant
-                debug_info.setdefault("fallback_hits", {})[vname] = hits
-            all_hits.extend(hits)
-
-        candidates = _extract_candidates(all_hits)
-        if candidates:
-            best_plate, _ = candidates[0]
-            best_conf = 0.0
-            best_candidates = candidates
-
-        if debug_info is not None:
-            debug_info["fallback_candidates"] = candidates
-
-        return {
-            "placa": best_plate,
-            "confianca": round(best_conf, 4),
-            "debug": debug_info,
-        }
-
-    # ── Processamento normal com caixas YOLO ──────────────────────────────────
     for r, box in detections:
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         plate_conf = float(box.conf[0])
@@ -263,7 +241,7 @@ def detect(image_bytes: bytes, debug: bool = False) -> dict:
                 variant_debug[vname] = {"img": variant, "hits": hits}
 
         candidates = _extract_candidates(all_hits)
-        top_text = candidates[0][0] if candidates else None
+        top_text  = candidates[0][0] if candidates else None
         top_score = candidates[0][1] if candidates else -999
 
         if debug_info is not None:
@@ -279,7 +257,6 @@ def detect(image_bytes: bytes, debug: bool = False) -> dict:
         if top_text and top_score > _score(best_plate or ""):
             best_plate = top_text
             best_conf = plate_conf
-            best_candidates = candidates
 
     return {
         "placa": best_plate,
