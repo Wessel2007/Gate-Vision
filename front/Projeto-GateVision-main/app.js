@@ -441,6 +441,12 @@ async function openGateManual() {
     console.error("openGateManual:", e)
   }
 
+  try {
+    await fetch(`${BACKEND_URL}/api/open-gate`, { method: "POST" })
+  } catch (e) {
+    console.warn("open-gate: backend indisponivel ou Arduino nao conectado.", e)
+  }
+
   await renderView()
 }
 

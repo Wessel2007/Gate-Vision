@@ -3,7 +3,6 @@ import os
 import re
 import signal
 import sys
-import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -11,14 +10,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
-    import serial
-except ImportError:
-    serial = None
-
-try:
     from supabase import create_client
 except ImportError:
     create_client = None
+
+from arduino import conectar_arduino, fechar_arduino, abrir_cancela
 
 load_dotenv()
 
@@ -41,9 +37,6 @@ SUPABASE_PLATE_COLUMN = os.getenv("SUPABASE_PLATE_COLUMN", "placa")
 CAMERA_ID = int(os.getenv("GATEVISION_CAMERA_ID", "1"))
 GATE_OPEN_SECONDS = float(os.getenv("GATE_OPEN_SECONDS", "5"))
 
-arduino = None
-arduino_conectado = False
-arduino_lock = threading.Lock()
 supabase = None
 
 
@@ -65,69 +58,6 @@ def normalizar_placa(placa: str | None) -> str | None:
 
     placa = re.sub(r"[^A-Z0-9]", "", str(placa).upper())
     return placa[:7] or None
-
-
-def conectar_arduino(porta: str, baud: int) -> bool:
-    global arduino, arduino_conectado
-
-    if serial is None:
-        print("Pacote pyserial nao instalado. Arduino ficara em modo simulacao.")
-        return False
-
-    try:
-        print(f"Tentando conectar ao Arduino em {porta}...")
-        arduino = serial.Serial(porta, baud, timeout=1)
-        time.sleep(2)
-        arduino_conectado = True
-        print("Arduino conectado com sucesso.\n")
-        return True
-    except Exception as exc:
-        arduino = None
-        arduino_conectado = False
-        print(f"Modo simulacao. Nao foi possivel conectar ao Arduino: {exc}\n")
-        return False
-
-
-def fechar_arduino():
-    global arduino, arduino_conectado
-
-    if arduino is not None:
-        try:
-            arduino.close()
-        except Exception:
-            pass
-
-    arduino = None
-    arduino_conectado = False
-
-
-def enviar_arduino(comando: bytes) -> bool:
-    if not arduino_conectado or arduino is None:
-        return False
-
-    try:
-        with arduino_lock:
-            arduino.reset_input_buffer()
-            arduino.write(comando)
-            arduino.flush()
-        return True
-    except Exception as exc:
-        print(f"Erro ao comunicar com Arduino: {exc}")
-        return False
-
-
-def abrir_cancela(tempo_aberta: float):
-    def acao():
-        print("Autorizado -> abrindo portao")
-        if not enviar_arduino(b"A"):
-            print("Arduino indisponivel. Simulando abertura/fechamento.")
-            return
-
-        time.sleep(tempo_aberta)
-        enviar_arduino(b"F")
-        print("Portao fechado")
-
-    threading.Thread(target=acao, daemon=True).start()
 
 
 def placa_autorizada(placa: str | None) -> bool:

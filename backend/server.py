@@ -6,6 +6,7 @@ from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from pipeline import load_models, detect
+from arduino import conectar_arduino, fechar_arduino, abrir_cancela, arduino_conectado
 
 load_dotenv()
 
@@ -15,9 +16,12 @@ MODEL_PLATES = os.getenv(
     "MODEL_PLATES",
     str(BASE_DIR / ".." / "back2" / "deteccao-placas-veiculares-main" / "models" / "best.pt")
 )
-DETECT_CONF  = float(os.getenv("DETECT_CONF",  "0.25"))
-DETECT_IMGSZ = int(os.getenv("DETECT_IMGSZ", "640"))
-PORT         = int(os.getenv("PORT",          "8000"))
+DETECT_CONF      = float(os.getenv("DETECT_CONF",       "0.25"))
+DETECT_IMGSZ     = int(os.getenv("DETECT_IMGSZ",       "640"))
+PORT             = int(os.getenv("PORT",                "8000"))
+ARDUINO_PORT     = os.getenv("ARDUINO_PORT",            "COM8")
+ARDUINO_BAUD     = int(os.getenv("ARDUINO_BAUD",        "9600"))
+GATE_OPEN_SECONDS = float(os.getenv("GATE_OPEN_SECONDS", "5"))
 
 app = FastAPI(title="GateVision API")
 
@@ -36,11 +40,21 @@ def startup():
     print(f"imgsz                       : {DETECT_IMGSZ}")
     load_models(MODEL_PLATES, conf=DETECT_CONF, imgsz=DETECT_IMGSZ)
     print("Modelos carregados com sucesso.")
+    conectar_arduino(ARDUINO_PORT, ARDUINO_BAUD)
+
+
+@app.on_event("shutdown")
+def shutdown():
+    fechar_arduino()
 
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "GateVision API"}
+    return {
+        "status": "ok",
+        "service": "GateVision API",
+        "arduino": arduino_conectado(),
+    }
 
 
 @app.post("/api/detect")
@@ -48,7 +62,7 @@ async def detect_plate(file: UploadFile = File(...)):
     image_bytes = await file.read()
     result = detect(image_bytes, debug=False)
 
-    placa    = result.get("placa")
+    placa     = result.get("placa")
     confianca = result.get("confianca", 0)
 
     if placa:
@@ -56,8 +70,16 @@ async def detect_plate(file: UploadFile = File(...)):
     else:
         print("[GateVision] Nenhuma placa detectada na imagem.")
 
-    # Retorna apenas os campos consumidos pelo frontend
     return {"placa": placa, "confianca": confianca}
+
+
+@app.post("/api/open-gate")
+async def open_gate():
+    """Aciona o Arduino para abrir a cancela/portão."""
+    abrir_cancela(GATE_OPEN_SECONDS)
+    connected = arduino_conectado()
+    print(f"[GateVision] Abertura manual solicitada. Arduino conectado: {connected}")
+    return {"ok": True, "arduino": connected}
 
 
 if __name__ == "__main__":
