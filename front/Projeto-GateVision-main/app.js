@@ -8,7 +8,23 @@ const db = createClient(
   'sb_publishable_RAYD5x0h3bSgkdToX39u8Q_JFYQkZyi'
 )
 
-const BACKEND_URL = "http://localhost:8000"
+// ── Resolução da URL do backend ────────────────────────────────
+// Prioridade: ?backend= na URL → localStorage → config.js → fallback local
+// Para uso no deploy: abrir a página com ?backend=https://SEU-TUNNEL.trycloudflare.com
+const _BACKEND_STORAGE_KEY = "gv_backend_url"
+const BACKEND_URL = (function () {
+  const params = new URLSearchParams(window.location.search)
+  const fromQuery = params.get("backend")
+  if (fromQuery) {
+    const clean = fromQuery.replace(/\/$/, "")
+    localStorage.setItem(_BACKEND_STORAGE_KEY, clean)
+    return clean
+  }
+  const fromStorage = localStorage.getItem(_BACKEND_STORAGE_KEY)
+  if (fromStorage) return fromStorage.replace(/\/$/, "")
+  if (window.GATEVISION_BACKEND_URL) return String(window.GATEVISION_BACKEND_URL).replace(/\/$/, "")
+  return "http://localhost:8000"
+})()
 const SESSION_KEY = "gv_session"
 const ESTAB_ID    = 1   // estabelecimento padrão
 
@@ -1345,6 +1361,34 @@ function bindViewActions() {
   }
 }
 
+// ── Configuração de backend em tempo real ─────────────────────
+
+function _updateBackendChip() {
+  const chip = document.getElementById("backendChip")
+  if (!chip) return
+  const isLocal = BACKEND_URL.includes("localhost")
+  chip.textContent = isLocal ? "API: local" : "API: " + BACKEND_URL.replace(/^https?:\/\//, "")
+  chip.style.background = isLocal ? "rgba(230,168,0,0.18)" : "rgba(31,139,86,0.18)"
+  chip.style.color       = isLocal ? "#a07800"              : "#1f8b56"
+  chip.style.border      = isLocal ? "1px solid #e6a800"   : "1px solid #1f8b56"
+}
+
+function _promptChangeBackend() {
+  const current = localStorage.getItem(_BACKEND_STORAGE_KEY) || BACKEND_URL
+  const input = prompt(
+    "Cole a URL do Cloudflare Tunnel (ex: https://abc-123.trycloudflare.com)\nDeixe vazio para usar localhost:",
+    current.includes("localhost") ? "" : current
+  )
+  if (input === null) return
+  const url = (input || "").trim().replace(/\/$/, "")
+  if (url) {
+    localStorage.setItem(_BACKEND_STORAGE_KEY, url)
+  } else {
+    localStorage.removeItem(_BACKEND_STORAGE_KEY)
+  }
+  window.location.reload()
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────
 
 async function bootstrap() {
@@ -1353,6 +1397,12 @@ async function bootstrap() {
     if (e.key === "Enter") login()
   })
   document.getElementById("btnLogout").addEventListener("click", logout)
+
+  const backendChip = document.getElementById("backendChip")
+  if (backendChip) {
+    _updateBackendChip()
+    backendChip.addEventListener("click", _promptChangeBackend)
+  }
 
   const session = getSession()
   if (session) {

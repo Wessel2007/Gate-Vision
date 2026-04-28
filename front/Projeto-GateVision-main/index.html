@@ -56,7 +56,10 @@
     <main class="main">
       <header class="top">
         <strong id="viewTitle">Painel</strong>
-        <div class="chip ok"><span>●</span> Sistema Ativo</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <div class="chip ok"><span>●</span> Sistema Ativo</div>
+          <div id="backendChip" class="chip" style="cursor:pointer;font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Clique para alterar o backend"></div>
+        </div>
       </header>
       <div id="viewContainer" class="content"></div>
     </main>
@@ -64,6 +67,7 @@
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./config.js" onerror="void(0)"></script>
   <script src="./app.js"></script>
 </body>
 </html>
