@@ -1,36 +1,26 @@
-"""
-webcam.py — Leitura contínua de placas via câmera (webcam ou IP).
-
-Projetado para uso em portarias, cancelas e entradas de edifícios.
-
-Uso:
-    python webcam.py --model <modelo.pt>
-    python webcam.py --model <modelo.pt> --camera 0
-    python webcam.py --model <modelo.pt> --camera rtsp://192.168.1.10/stream
-    python webcam.py --model <modelo.pt> --show --conf 0.15 --imgsz 1280
-
-Parâmetros importantes:
-    --camera        Índice da webcam (0, 1...) ou URL RTSP de câmera IP
-    --model         Caminho para o .pt do YOLO detector de placas
-    --conf          Limiar de confiança do YOLO (padrão: 0.15)
-    --imgsz         Tamanho de entrada do YOLO (padrão: 1280)
-    --sample-every  Processar 1 a cada N frames (padrão: 5)
-    --confirm       Número de frames consecutivos com a mesma placa
-                    para confirmar uma leitura (padrão: 3)
-    --cooldown      Segundos mínimos entre duas confirmações da mesma placa
-                    (evita acionar duas vezes seguidas) (padrão: 10)
-    --show          Exibe janela com o frame atual e a última placa lida
-
-Pressione Q (na janela) ou Ctrl+C para encerrar.
-"""
-
 import argparse
 import os
-import sys
-import time
+import re
 import signal
+import sys
+import threading
+import time
 from collections import deque
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+try:
+    import serial
+except ImportError:
+    serial = None
+
+try:
+    from supabase import create_client
+except ImportError:
+    create_client = None
+
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -38,13 +28,181 @@ DEFAULT_MODEL = str(
     BASE_DIR / ".." / "back2" / "deteccao-placas-veiculares-main" / "models" / "best.pt"
 )
 
+SUPABASE_URL = os.getenv(
+    "SUPABASE_URL",
+    "https://blulbaobttmwewxvttql.supabase.co",
+)
+SUPABASE_KEY = os.getenv(
+    "SUPABASE_KEY",
+    "sb_publishable_RAYD5x0h3bSgkdToX39u8Q_JFYQkZyi",
+)
+SUPABASE_AUTH_VIEW = os.getenv("SUPABASE_AUTH_VIEW", "vw_placas_autorizadas")
+SUPABASE_PLATE_COLUMN = os.getenv("SUPABASE_PLATE_COLUMN", "placa")
+CAMERA_ID = int(os.getenv("GATEVISION_CAMERA_ID", "1"))
+GATE_OPEN_SECONDS = float(os.getenv("GATE_OPEN_SECONDS", "5"))
+
+arduino = None
+arduino_conectado = False
+arduino_lock = threading.Lock()
+supabase = None
+
+
+def criar_cliente_supabase():
+    if create_client is None:
+        print("Pacote supabase nao instalado. A autorizacao ficara indisponivel.")
+        return None
+
+    try:
+        return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as exc:
+        print(f"Erro ao criar cliente Supabase: {exc}")
+        return None
+
+
+def normalizar_placa(placa: str | None) -> str | None:
+    if not placa:
+        return None
+
+    placa = re.sub(r"[^A-Z0-9]", "", str(placa).upper())
+    return placa[:7] or None
+
+
+def conectar_arduino(porta: str, baud: int) -> bool:
+    global arduino, arduino_conectado
+
+    if serial is None:
+        print("Pacote pyserial nao instalado. Arduino ficara em modo simulacao.")
+        return False
+
+    try:
+        print(f"Tentando conectar ao Arduino em {porta}...")
+        arduino = serial.Serial(porta, baud, timeout=1)
+        time.sleep(2)
+        arduino_conectado = True
+        print("Arduino conectado com sucesso.\n")
+        return True
+    except Exception as exc:
+        arduino = None
+        arduino_conectado = False
+        print(f"Modo simulacao. Nao foi possivel conectar ao Arduino: {exc}\n")
+        return False
+
+
+def fechar_arduino():
+    global arduino, arduino_conectado
+
+    if arduino is not None:
+        try:
+            arduino.close()
+        except Exception:
+            pass
+
+    arduino = None
+    arduino_conectado = False
+
+
+def enviar_arduino(comando: bytes) -> bool:
+    if not arduino_conectado or arduino is None:
+        return False
+
+    try:
+        with arduino_lock:
+            arduino.reset_input_buffer()
+            arduino.write(comando)
+            arduino.flush()
+        return True
+    except Exception as exc:
+        print(f"Erro ao comunicar com Arduino: {exc}")
+        return False
+
+
+def abrir_cancela(tempo_aberta: float):
+    def acao():
+        print("Autorizado -> abrindo portao")
+        if not enviar_arduino(b"A"):
+            print("Arduino indisponivel. Simulando abertura/fechamento.")
+            return
+
+        time.sleep(tempo_aberta)
+        enviar_arduino(b"F")
+        print("Portao fechado")
+
+    threading.Thread(target=acao, daemon=True).start()
+
+
+def placa_autorizada(placa: str | None) -> bool:
+    placa = normalizar_placa(placa)
+    if not placa or supabase is None:
+        return False
+
+    try:
+        response = (
+            supabase.table(SUPABASE_AUTH_VIEW)
+            .select("*")
+            .eq(SUPABASE_PLATE_COLUMN, placa)
+            .limit(1)
+            .execute()
+        )
+        return bool(response.data)
+    except Exception as exc:
+        print(f"Erro ao consultar placa autorizada no Supabase: {exc}")
+        return False
+
+
+def _confidence_percent(conf_yolo: float) -> float:
+    conf = float(conf_yolo or 0)
+    return round(conf * 100, 2) if conf <= 1 else round(conf, 2)
+
+
+def registrar_acesso(placa: str, autorizado: bool, conf_yolo: float):
+    if supabase is None:
+        print("Cliente Supabase indisponivel. Acesso nao registrado.")
+        return
+
+    try:
+        if autorizado:
+            supabase.rpc(
+                "registrar_acesso",
+                {
+                    "p_placa": placa,
+                    "p_camera_id": CAMERA_ID,
+                    "p_confianca": _confidence_percent(conf_yolo),
+                    "p_imagem_url": None,
+                    "p_tempo_ms": None,
+                },
+            ).execute()
+        else:
+            supabase.table("acessos").insert(
+                {
+                    "placa_detectada": placa,
+                    "camera_id": CAMERA_ID,
+                    "autorizado": False,
+                    "motivo_bloqueio": "Placa nao autorizada",
+                    "confianca": _confidence_percent(conf_yolo),
+                }
+            ).execute()
+    except Exception as exc:
+        print(f"Erro ao registrar acesso no Supabase: {exc}")
+
 
 def _on_plate_confirmed(placa: str, conf_yolo: float):
-    """Callback chamado quando uma placa é confirmada.
-    Aqui você pode adicionar: gravar no banco, acionar Arduino, etc.
-    """
+    global GATE_OPEN_SECONDS
+
+    placa = normalizar_placa(placa)
+    if not placa:
+        print("Leitura de placa invalida.")
+        return
+
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] PLACA CONFIRMADA: {placa}  (confianca YOLO: {conf_yolo:.0%})")
+
+    autorizado = placa_autorizada(placa)
+    registrar_acesso(placa, autorizado, conf_yolo)
+
+    if autorizado:
+        abrir_cancela(GATE_OPEN_SECONDS)
+    else:
+        print(f"Acesso negado para a placa {placa}.")
 
 
 def run(camera, model_path: str, conf: float, imgsz: int,
@@ -58,7 +216,10 @@ def run(camera, model_path: str, conf: float, imgsz: int,
     load_models(model_path, conf=conf, imgsz=imgsz)
     print(f"Modelos carregados. Abrindo camera: {camera}")
 
-    cap = cv2.VideoCapture(camera)
+    if isinstance(camera, int) and os.name == "nt":
+        cap = cv2.VideoCapture(camera, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(camera)
     if not cap.isOpened():
         print(f"Erro: nao foi possivel abrir a camera '{camera}'.", file=sys.stderr)
         sys.exit(1)
@@ -109,8 +270,8 @@ def run(camera, model_path: str, conf: float, imgsz: int,
             continue
 
         result = detect(buf.tobytes())
-        placa   = result.get("placa")
-        conf_yolo = result.get("confianca", 0.0)
+        placa = normalizar_placa(result.get("placa"))
+        conf_yolo = float(result.get("confianca", 0.0))
 
         recent_plates.append(placa)
 
@@ -156,6 +317,8 @@ def _draw_overlay(frame, placa: str):
 
 
 def main():
+    global supabase, GATE_OPEN_SECONDS
+
     parser = argparse.ArgumentParser(
         description="Leitura continua de placas via webcam ou camera IP."
     )
@@ -180,7 +343,18 @@ def main():
                         help="Segundos entre disparos da mesma placa (padrao: 10)")
     parser.add_argument("--show", action="store_true",
                         help="Exibir janela com preview da camera")
+    parser.add_argument("--arduino-port", default=os.getenv("ARDUINO_PORT", "COM8"),
+                        help="Porta serial do Arduino (padrao: COM8)")
+    parser.add_argument("--baud", type=int,
+                        default=int(os.getenv("ARDUINO_BAUD", "9600")),
+                        help="Baud rate da serial do Arduino (padrao: 9600)")
+    parser.add_argument("--gate-open-seconds", type=float,
+                        default=GATE_OPEN_SECONDS,
+                        help="Tempo em segundos para manter o portao aberto")
     args = parser.parse_args()
+
+    supabase = criar_cliente_supabase()
+    GATE_OPEN_SECONDS = args.gate_open_seconds
 
     # Converter --camera para int se for número
     camera = args.camera
@@ -196,16 +370,21 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    run(
-        camera=camera,
-        model_path=str(model_path),
-        conf=args.conf,
-        imgsz=args.imgsz,
-        sample_every=args.sample_every,
-        confirm_frames=args.confirm,
-        cooldown=args.cooldown,
-        show=args.show,
-    )
+    conectar_arduino(args.arduino_port, args.baud)
+
+    try:
+        run(
+            camera=camera,
+            model_path=str(model_path),
+            conf=args.conf,
+            imgsz=args.imgsz,
+            sample_every=args.sample_every,
+            confirm_frames=args.confirm,
+            cooldown=args.cooldown,
+            show=args.show,
+        )
+    finally:
+        fechar_arduino()
 
 
 if __name__ == "__main__":
