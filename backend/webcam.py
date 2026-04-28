@@ -273,8 +273,8 @@ def main():
                         help="Segundos entre disparos da mesma placa (padrao: 10)")
     parser.add_argument("--show", action="store_true",
                         help="Exibir janela com preview da camera")
-    parser.add_argument("--arduino-port", default=os.getenv("ARDUINO_PORT", "COM8"),
-                        help="Porta serial do Arduino (padrao: COM8)")
+    parser.add_argument("--arduino-port", default=os.getenv("ARDUINO_PORT", "COM5"),
+                        help="Porta serial do Arduino (padrao: COM5)")
     parser.add_argument("--baud", type=int,
                         default=int(os.getenv("ARDUINO_BAUD", "9600")),
                         help="Baud rate da serial do Arduino (padrao: 9600)")

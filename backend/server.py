@@ -19,7 +19,7 @@ MODEL_PLATES = os.getenv(
 DETECT_CONF      = float(os.getenv("DETECT_CONF",       "0.25"))
 DETECT_IMGSZ     = int(os.getenv("DETECT_IMGSZ",       "640"))
 PORT             = int(os.getenv("PORT",                "8000"))
-ARDUINO_PORT     = os.getenv("ARDUINO_PORT",            "COM8")
+ARDUINO_PORT     = os.getenv("ARDUINO_PORT",            "COM5")
 ARDUINO_BAUD     = int(os.getenv("ARDUINO_BAUD",        "9600"))
 GATE_OPEN_SECONDS = float(os.getenv("GATE_OPEN_SECONDS", "5"))
 
