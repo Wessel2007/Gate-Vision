@@ -36,7 +36,11 @@ const APP = {
   charts:              { timeline: null, distribution: null },
   dashboardFilterDays: 7,
   _dashboardCache:     null,
-  webcamStream:        null
+  webcamStream:        null,
+  webcamDetectTimer:   null,
+  ocrInFlight:         false,
+  detectInFlight:      false,
+  lastProcessedPlate:  null
 }
 
 // ── Utilidades ────────────────────────────────────────────────
@@ -249,8 +253,14 @@ function renderNav() {
 
 // ── Monitor de Placas ─────────────────────────────────────────
 
-async function detectPlate(placa) {
+async function detectPlate(placa, options = {}) {
   const clean = onlyPlate(placa)
+  if (clean.length < 7 || APP.detectInFlight) return
+  if (APP.lastProcessedPlate === clean && APP.lastDetection?.placa === clean) return
+
+  const autoOpen = options.autoOpen !== false
+  APP.detectInFlight = true
+  APP.lastProcessedPlate = clean
   APP.lastDetection = null
   APP.lastDecision  = null
 
@@ -283,12 +293,26 @@ async function detectPlate(placa) {
     APP.lastDetection = { placa: clean, status: "nao-cadastrado", morador: null }
   }
 
-  await renderView()
+  try {
+    if (autoOpen && APP.lastDetection?.status === "autorizado") {
+      await openGateManual(true)
+    } else {
+      await renderView()
+    }
+  } finally {
+    APP.detectInFlight = false
+  }
 }
 
-async function detectPlateFromImage(file) {
-  APP.lastDetection = null
-  APP.lastDecision  = null
+async function detectPlateFromImage(file, options = {}) {
+  if (APP.ocrInFlight) return
+  APP.ocrInFlight = true
+  const fromWebcam = options.fromWebcam === true
+
+  if (!fromWebcam) {
+    APP.lastDetection = null
+    APP.lastDecision  = null
+  }
 
   try {
     const form = new FormData()
@@ -300,9 +324,13 @@ async function detectPlateFromImage(file) {
     const json = await res.json()
 
     if (!json.placa) {
-      showToast("Nenhuma placa detectada na imagem.")
+      if (!fromWebcam) {
+        showToast("Nenhuma placa detectada na imagem.")
+      }
       APP.lastDetection = { placa: "---", status: "nao-detectado", morador: null }
-      await renderView()
+      if (!fromWebcam) {
+        await renderView()
+      }
       return
     }
 
@@ -310,11 +338,18 @@ async function detectPlateFromImage(file) {
     const detectInput = document.getElementById("detectInput")
     if (detectInput) detectInput.value = clean
 
+    if (APP.webcamStream) stopWebcam()
     await detectPlate(clean)
   } catch (e) {
-    showToast("Erro ao processar imagem: " + e.message)
+    if (!fromWebcam) {
+      showToast("Erro ao processar imagem: " + e.message)
+    }
     console.error("detectPlateFromImage:", e)
-    await renderView()
+    if (!fromWebcam) {
+      await renderView()
+    }
+  } finally {
+    APP.ocrInFlight = false
   }
 }
 
@@ -338,6 +373,22 @@ function _webcamShowPlaceholder() {
   if (placeholder) { placeholder.style.display  = ""      }
 }
 
+function _syncWebcamUI() {
+  if (!APP.webcamStream) return
+  const video = document.getElementById("webcamVideo")
+  if (video) {
+    video.srcObject = APP.webcamStream
+  }
+  _webcamShowVideo()
+
+  const btnStart  = document.getElementById("btnStartWebcam")
+  const btnDetect = document.getElementById("btnDetectWebcam")
+  const btnStop   = document.getElementById("btnStopWebcam")
+  if (btnStart)  { btnStart.disabled = true }
+  if (btnDetect) { btnDetect.disabled = true; btnDetect.textContent = APP.detectInFlight ? "Detectando..." : "Captura automatica ativa" }
+  if (btnStop)   { btnStop.style.display = "" }
+}
+
 async function startWebcam() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     showToast("Seu navegador nao suporta acesso a webcam.")
@@ -357,8 +408,13 @@ async function startWebcam() {
     const btnDetect = document.getElementById("btnDetectWebcam")
     const btnStop   = document.getElementById("btnStopWebcam")
     if (btnStart)  { btnStart.disabled = true }
-    if (btnDetect) { btnDetect.disabled = false }
+    if (btnDetect) { btnDetect.disabled = true; btnDetect.textContent = "Captura automatica ativa" }
     if (btnStop)   { btnStop.style.display = "" }
+
+    if (APP.webcamDetectTimer) clearInterval(APP.webcamDetectTimer)
+    APP.webcamDetectTimer = setInterval(() => {
+      if (!APP.detectInFlight) captureAndDetectWebcam(true)
+    }, 2500)
   } catch (err) {
     const msg = err.name === "NotAllowedError"
       ? "Permissao de camera negada. Permita o acesso no navegador."
@@ -370,6 +426,10 @@ async function startWebcam() {
 }
 
 function stopWebcam() {
+  if (APP.webcamDetectTimer) {
+    clearInterval(APP.webcamDetectTimer)
+    APP.webcamDetectTimer = null
+  }
   if (APP.webcamStream) {
     APP.webcamStream.getTracks().forEach(t => t.stop())
     APP.webcamStream = null
@@ -383,16 +443,17 @@ function stopWebcam() {
   const btnDetect = document.getElementById("btnDetectWebcam")
   const btnStop   = document.getElementById("btnStopWebcam")
   if (btnStart)  { btnStart.disabled = false }
-  if (btnDetect) { btnDetect.disabled = true }
+  if (btnDetect) { btnDetect.disabled = true; btnDetect.textContent = "Deteccao automatica" }
   if (btnStop)   { btnStop.style.display = "none" }
 }
 
-async function captureAndDetectWebcam() {
+async function captureAndDetectWebcam(silent = false) {
   const video = document.getElementById("webcamVideo")
   if (!video || !APP.webcamStream) {
-    showToast("Webcam nao esta ativa.")
+    if (!silent) showToast("Webcam nao esta ativa.")
     return
   }
+  if (APP.detectInFlight || APP.ocrInFlight) return
   const canvas  = document.createElement("canvas")
   canvas.width  = video.videoWidth  || 640
   canvas.height = video.videoHeight || 480
@@ -402,25 +463,19 @@ async function captureAndDetectWebcam() {
     if (!blob) { showToast("Erro ao capturar frame da webcam."); return }
     const file = new File([blob], "webcam_frame.jpg", { type: "image/jpeg" })
 
-    const preview     = document.getElementById("imgPreview")
-    const previewWrap = document.getElementById("imgPreviewWrap")
-    const webcamVideo = document.getElementById("webcamVideo")
-    if (preview && previewWrap) {
-      preview.src = URL.createObjectURL(file)
-      previewWrap.style.display = "block"
-    }
-    if (webcamVideo) { webcamVideo.style.display = "none" }
-
-    stopWebcam()
-
     const btnDetect = document.getElementById("btnDetectWebcam")
     if (btnDetect) { btnDetect.disabled = true; btnDetect.textContent = "Detectando..." }
 
-    await detectPlateFromImage(file)
+    await detectPlateFromImage(file, { fromWebcam: true })
+
+    if (APP.webcamStream) {
+      _webcamShowVideo()
+      if (btnDetect) btnDetect.textContent = "Captura automatica ativa"
+    }
   }, "image/jpeg", 0.92)
 }
 
-async function openGateManual() {
+async function openGateManual(autoTriggered = false) {
   if (!APP.lastDetection) return
   const placa = APP.lastDetection.placa
 
@@ -435,7 +490,7 @@ async function openGateManual() {
     if (error) throw error
 
     APP.lastDecision = "liberado"
-    showToast("Portao aberto pelo porteiro.", "ok")
+    showToast(autoTriggered ? "Placa autorizada. Portao aberto automaticamente." : "Portao aberto pelo porteiro.", "ok")
   } catch (e) {
     showToast("Erro ao registrar abertura: " + e.message)
     console.error("openGateManual:", e)
@@ -534,7 +589,6 @@ async function renderDashboard() {
             <option value="all" ${String(APP.dashboardFilterDays) === "all" ? "selected" : ""}>Todos os registros</option>
           </select>
         </div>
-        <button id="btnApplyDashboardFilter" class="btn">Filtrar graficos</button>
       </div>
 
       <div class="grid-3">
@@ -781,20 +835,8 @@ async function renderCadastroAdmin() {
           <h2 class="section-title">Gestao de moradores e veiculos</h2>
           <p class="section-sub">Cadastre moradores, associe placas e mantenha a base de acesso sempre atualizada.</p>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-head">Novo Cliente / Veiculo</div>
-        <div class="card-body">
-          <form id="residentForm" class="form-grid">
-          <div><label class="login-sub">Nome completo</label><input required id="fNome" class="input" /></div>
-          <div><label class="login-sub">CPF</label><input required id="fCpf" class="input" maxlength="14" /></div>
-          <div><label class="login-sub">Apartamento</label><input required id="fApto" class="input" /></div>
-          <div><label class="login-sub">Torre</label><input required id="fTorre" class="input" /></div>
-          <div><label class="login-sub">Placa</label><input required id="fPlaca" class="input mono" maxlength="7" /></div>
-          <div><label class="login-sub">Veiculo</label><input id="fVeiculo" class="input" /></div>
-          <div><label class="login-sub">Vaga</label><input id="fVaga" class="input" /></div>
-          <div class="form-actions"><button class="btn primary" type="submit">Salvar Cadastro</button></div>
-          </form>
+        <div class="panel-actions">
+          <button id="btnOpenResidentModal" class="btn primary">Cadastrar placa e morador</button>
         </div>
       </div>
       <div class="card">
@@ -988,16 +1030,13 @@ function renderMonitorPorteiro() {
               </div>
               <div class="monitor-toolbar" style="margin-top:12px;">
                 <input id="detectInput" class="input mono" placeholder="Ex: BRA2E24" maxlength="7">
-                <button id="btnDetect" class="btn primary">Identificar placa</button>
               </div>
               <div class="monitor-toolbar" style="margin-top:10px;">
                 <input type="file" id="imageInput" accept="image/*" style="display:none;">
                 <button id="btnUpload" class="btn">Enviar foto</button>
-                <button id="btnDetectImage" class="btn primary" disabled>Detectar na foto</button>
               </div>
               <div class="monitor-toolbar" style="margin-top:10px;">
                 <button id="btnStartWebcam" class="btn">Usar webcam</button>
-                <button id="btnDetectWebcam" class="btn primary" disabled>Detectar pela webcam</button>
                 <button id="btnStopWebcam" class="btn err" style="display:none;">Parar webcam</button>
               </div>
             </div>
@@ -1005,7 +1044,7 @@ function renderMonitorPorteiro() {
 
           <div class="monitor-banner">
             <strong>Fluxo recomendado</strong>
-            <p class="section-sub">Primeiro capture a placa. Depois confira o morador identificado e finalize com liberação ou negação para registrar o evento no histórico.</p>
+            <p class="section-sub">A validação acontece automaticamente quando a placa é reconhecida. Se estiver autorizada, o portão é aberto sem confirmação manual.</p>
           </div>
         </div>
 
@@ -1107,26 +1146,8 @@ async function renderCameras() {
           <h2 class="section-title">Cameras do sistema</h2>
           <p class="section-sub">Cadastre os pontos de captura e organize os equipamentos de entrada, saída e garagem.</p>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-head">Nova Camera</div>
-        <div class="card-body">
-          <form id="cameraForm" class="form-grid">
-          <div><label class="login-sub">Nome da Camera</label><input required id="camNome" class="input" placeholder="Ex: CAM-PORT-01" /></div>
-          <div><label class="login-sub">Localizacao</label><input required id="camLocal" class="input" placeholder="Ex: Portaria Principal" /></div>
-          <div>
-            <label class="login-sub">Tipo</label>
-            <select required id="camTipo" class="input">
-              <option value="1">Entrada</option>
-              <option value="2">Saida</option>
-              <option value="3">Garagem</option>
-              <option value="4">Estacionamento</option>
-            </select>
-          </div>
-          <div class="form-actions">
-            <button class="btn primary" type="submit">Salvar Camera</button>
-          </div>
-          </form>
+        <div class="panel-actions">
+          <button id="btnOpenCameraModal" class="btn primary">Cadastrar camera</button>
         </div>
       </div>
       <div class="card">
@@ -1218,21 +1239,8 @@ async function renderAutorizacoes() {
           <h2 class="section-title">Liberacoes para visitantes</h2>
           <p class="section-sub">Cadastre acessos com validade limitada para prestadores, entregas e visitantes fora da base principal.</p>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-head">Nova Autorizacao Temporaria</div>
-        <div class="card-body">
-          <form id="autorizacaoForm" class="form-grid">
-          <div><label class="login-sub">Placa</label><input required id="atPlaca" class="input mono" maxlength="7" placeholder="Ex: TMP1A23" /></div>
-          <div><label class="login-sub">Nome do Visitante</label><input required id="atNome" class="input" placeholder="Ex: Pedro Encanador" /></div>
-          <div><label class="login-sub">Motivo</label><input id="atMotivo" class="input" placeholder="Ex: manutencao, visita, entrega" /></div>
-          <div></div>
-          <div><label class="login-sub">Inicio</label><input required id="atInicio" type="datetime-local" class="input" value="${defaultDatetime()}" /></div>
-          <div><label class="login-sub">Fim</label><input required id="atFim" type="datetime-local" class="input" value="${defaultDatetime(24)}" /></div>
-          <div class="form-actions">
-            <button class="btn primary" type="submit">Criar Autorizacao</button>
-          </div>
-          </form>
+        <div class="panel-actions">
+          <button id="btnOpenAutorizacaoModal" class="btn primary">Criar autorizacao</button>
         </div>
       </div>
       <div class="card">
@@ -1262,6 +1270,94 @@ async function renderAutorizacoes() {
 }
 
 // ── renderView ────────────────────────────────────────────────
+
+function renderResidentForm() {
+  return `
+    <form id="residentForm" class="form-grid">
+      <div><label class="login-sub">Nome completo</label><input required id="fNome" class="input" /></div>
+      <div><label class="login-sub">CPF</label><input required id="fCpf" class="input" maxlength="14" /></div>
+      <div><label class="login-sub">Apartamento</label><input required id="fApto" class="input" /></div>
+      <div><label class="login-sub">Torre</label><input required id="fTorre" class="input" /></div>
+      <div><label class="login-sub">Placa</label><input required id="fPlaca" class="input mono" maxlength="7" /></div>
+      <div><label class="login-sub">Veiculo</label><input id="fVeiculo" class="input" /></div>
+      <div><label class="login-sub">Vaga</label><input id="fVaga" class="input" /></div>
+      <div class="form-actions modal-actions">
+        <button class="btn primary" type="submit">Salvar Cadastro</button>
+        <button class="btn" type="button" data-close-modal>Cancelar</button>
+      </div>
+    </form>`
+}
+
+function renderCameraForm() {
+  return `
+    <form id="cameraForm" class="form-grid">
+      <div><label class="login-sub">Nome da Camera</label><input required id="camNome" class="input" placeholder="Ex: CAM-PORT-01" /></div>
+      <div><label class="login-sub">Localizacao</label><input required id="camLocal" class="input" placeholder="Ex: Portaria Principal" /></div>
+      <div>
+        <label class="login-sub">Tipo</label>
+        <select required id="camTipo" class="input">
+          <option value="1">Entrada</option>
+          <option value="2">Saida</option>
+          <option value="3">Garagem</option>
+          <option value="4">Estacionamento</option>
+        </select>
+      </div>
+      <div class="form-actions modal-actions">
+        <button class="btn primary" type="submit">Salvar Camera</button>
+        <button class="btn" type="button" data-close-modal>Cancelar</button>
+      </div>
+    </form>`
+}
+
+function renderAutorizacaoForm() {
+  return `
+    <form id="autorizacaoForm" class="form-grid">
+      <div><label class="login-sub">Placa</label><input required id="atPlaca" class="input mono" maxlength="7" placeholder="Ex: TMP1A23" /></div>
+      <div><label class="login-sub">Nome do Visitante</label><input required id="atNome" class="input" placeholder="Ex: Pedro Encanador" /></div>
+      <div><label class="login-sub">Motivo</label><input id="atMotivo" class="input" placeholder="Ex: manutencao, visita, entrega" /></div>
+      <div></div>
+      <div><label class="login-sub">Inicio</label><input required id="atInicio" type="datetime-local" class="input" value="${defaultDatetime()}" /></div>
+      <div><label class="login-sub">Fim</label><input required id="atFim" type="datetime-local" class="input" value="${defaultDatetime(24)}" /></div>
+      <div class="form-actions modal-actions">
+        <button class="btn primary" type="submit">Criar Autorizacao</button>
+        <button class="btn" type="button" data-close-modal>Cancelar</button>
+      </div>
+    </form>`
+}
+
+function openModal(title, content) {
+  const modal = document.getElementById("appModal")
+  const titleEl = document.getElementById("appModalTitle")
+  const bodyEl = document.getElementById("appModalBody")
+  if (!modal || !titleEl || !bodyEl) return
+  titleEl.textContent = title
+  bodyEl.innerHTML = content
+  modal.classList.remove("hidden")
+  document.body.classList.add("modal-open")
+}
+
+function closeModal() {
+  const modal = document.getElementById("appModal")
+  const bodyEl = document.getElementById("appModalBody")
+  if (!modal || !bodyEl) return
+  modal.classList.add("hidden")
+  bodyEl.innerHTML = ""
+  document.body.classList.remove("modal-open")
+}
+
+function bindModalShell() {
+  const modal = document.getElementById("appModal")
+  if (!modal || modal.dataset.bound === "true") return
+  modal.dataset.bound = "true"
+
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal || e.target.closest("[data-close-modal]")) closeModal()
+  })
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal()
+  })
+}
 
 async function renderView() {
   const titleMap = {
@@ -1298,12 +1394,67 @@ async function renderView() {
 
   vc.innerHTML = html
   bindViewActions()
+  if (APP.currentView === "monitor" && APP.webcamStream) _syncWebcamUI()
   if (APP.currentView === "dashboard") drawDashboardCharts()
 }
 
 // ── bindViewActions ───────────────────────────────────────────
 
 function bindViewActions() {
+  const btnOpenResidentModal = document.getElementById("btnOpenResidentModal")
+  if (btnOpenResidentModal) {
+    btnOpenResidentModal.addEventListener("click", () => {
+      openModal("Novo Cliente / Veiculo", renderResidentForm())
+      bindResidentModalForm()
+    })
+  }
+
+  const btnOpenCameraModal = document.getElementById("btnOpenCameraModal")
+  if (btnOpenCameraModal) {
+    btnOpenCameraModal.addEventListener("click", () => {
+      openModal("Nova Camera", renderCameraForm())
+      bindCameraModalForm()
+    })
+  }
+
+  const btnOpenAutorizacaoModal = document.getElementById("btnOpenAutorizacaoModal")
+  if (btnOpenAutorizacaoModal) {
+    btnOpenAutorizacaoModal.addEventListener("click", () => {
+      openModal("Nova Autorizacao Temporaria", renderAutorizacaoForm())
+      bindAutorizacaoModalForm()
+    })
+  }
+
+  document.querySelectorAll("[data-del]").forEach(btn => {
+    if (btn.dataset.bound === "true") return
+    btn.dataset.bound = "true"
+    btn.addEventListener("click", async () => {
+      if (!confirm("Deseja remover este cadastro?")) return
+      const ok = await deleteResident(btn.dataset.del)
+      if (ok) await renderView()
+    })
+  })
+
+  document.querySelectorAll("[data-del-cam]").forEach(btn => {
+    if (btn.dataset.bound === "true") return
+    btn.dataset.bound = "true"
+    btn.addEventListener("click", async () => {
+      if (!confirm("Deseja remover esta camera?")) return
+      const ok = await deleteCamara(btn.dataset.delCam)
+      if (ok) await renderView()
+    })
+  })
+
+  document.querySelectorAll("[data-del-auth]").forEach(btn => {
+    if (btn.dataset.bound === "true") return
+    btn.dataset.bound = "true"
+    btn.addEventListener("click", async () => {
+      if (!confirm("Deseja cancelar esta autorizacao?")) return
+      const ok = await deleteAutorizacao(btn.dataset.delAuth)
+      if (ok) await renderView()
+    })
+  })
+
   // ── Formulário de cadastro de moradores
   const residentForm = document.getElementById("residentForm")
   if (residentForm) {
@@ -1434,18 +1585,31 @@ function bindViewActions() {
   // ── Monitor: detectar placa (manual)
   const detectBtn   = document.getElementById("btnDetect")
   const detectInput = document.getElementById("detectInput")
-  if (detectBtn && detectInput) {
-    detectInput.addEventListener("input", () => detectInput.value = onlyPlate(detectInput.value))
+  if (detectInput) {
+    detectInput.addEventListener("input", async () => {
+      detectInput.value = onlyPlate(detectInput.value)
+      if (detectInput.value.length === 7) {
+        if (detectBtn) {
+          detectBtn.disabled = true
+          detectBtn.textContent = "Validando..."
+        }
+        await detectPlate(detectInput.value)
+      } else {
+        APP.lastProcessedPlate = null
+      }
+    })
 
     const doDetect = async () => {
       const p = onlyPlate(detectInput.value)
       if (!p) { showToast("Digite uma placa para identificar."); return }
-      detectBtn.disabled    = true
-      detectBtn.textContent = "Verificando..."
+      if (detectBtn) {
+        detectBtn.disabled    = true
+        detectBtn.textContent = "Verificando..."
+      }
       await detectPlate(p)
     }
 
-    detectBtn.addEventListener("click", doDetect)
+    if (detectBtn) detectBtn.addEventListener("click", doDetect)
     detectInput.addEventListener("keydown", e => { if (e.key === "Enter") doDetect() })
   }
 
@@ -1453,13 +1617,16 @@ function bindViewActions() {
   const imageInput     = document.getElementById("imageInput")
   const btnUpload      = document.getElementById("btnUpload")
   const btnDetectImage = document.getElementById("btnDetectImage")
-  if (imageInput && btnUpload && btnDetectImage) {
+  if (imageInput && btnUpload) {
     btnUpload.addEventListener("click", () => imageInput.click())
 
-    imageInput.addEventListener("change", () => {
+    imageInput.addEventListener("change", async () => {
       const file = imageInput.files[0]
       if (!file) return
-      btnDetectImage.disabled = false
+      if (btnDetectImage) {
+        btnDetectImage.disabled = true
+        btnDetectImage.textContent = "Detectando..."
+      }
 
       const preview     = document.getElementById("imgPreview")
       const previewWrap = document.getElementById("imgPreviewWrap")
@@ -1469,13 +1636,6 @@ function bindViewActions() {
         previewWrap.style.display = "block"
         placeholder.style.display = "none"
       }
-    })
-
-    btnDetectImage.addEventListener("click", async () => {
-      const file = imageInput.files[0]
-      if (!file) { showToast("Selecione uma imagem primeiro."); return }
-      btnDetectImage.disabled    = true
-      btnDetectImage.textContent = "Detectando..."
       await detectPlateFromImage(file)
     })
   }
@@ -1496,10 +1656,9 @@ function bindViewActions() {
   if (btnDenyEl) btnDenyEl.addEventListener("click", denyAccess)
 
   // ── Dashboard: filtro de período
-  const btnFilter    = document.getElementById("btnApplyDashboardFilter")
   const selectFilter = document.getElementById("dashboardFilter")
-  if (btnFilter && selectFilter) {
-    btnFilter.addEventListener("click", () => {
+  if (selectFilter) {
+    selectFilter.addEventListener("change", () => {
       APP.dashboardFilterDays = selectFilter.value
       renderView()
     })
@@ -1507,6 +1666,134 @@ function bindViewActions() {
 }
 
 // ── Configuração de backend em tempo real ─────────────────────
+
+function bindResidentModalForm() {
+  const residentForm = document.getElementById("residentForm")
+  if (!residentForm || residentForm.dataset.modalBound === "true") return
+  residentForm.dataset.modalBound = "true"
+
+  const cpfInput   = document.getElementById("fCpf")
+  const placaInput = document.getElementById("fPlaca")
+
+  cpfInput.addEventListener("input",   () => cpfInput.value   = formatCPF(cpfInput.value))
+  placaInput.addEventListener("input", () => placaInput.value = onlyPlate(placaInput.value))
+
+  residentForm.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    const btn = residentForm.querySelector("[type=submit]")
+    btn.disabled    = true
+    btn.textContent = "Salvando..."
+
+    const novo = {
+      nome:        document.getElementById("fNome").value.trim(),
+      cpf:         document.getElementById("fCpf").value.replace(/\D/g, ""),
+      apartamento: document.getElementById("fApto").value.trim(),
+      torre:       document.getElementById("fTorre").value.trim().toUpperCase(),
+      placa:       onlyPlate(document.getElementById("fPlaca").value),
+      veiculo:     document.getElementById("fVeiculo").value.trim()
+    }
+
+    if (novo.cpf.length !== 11) {
+      showToast("CPF deve ter 11 digitos.")
+      btn.disabled = false
+      btn.textContent = "Salvar Cadastro"
+      return
+    }
+    if (novo.placa.length < 7) {
+      showToast("Placa invalida (minimo 7 caracteres).")
+      btn.disabled = false
+      btn.textContent = "Salvar Cadastro"
+      return
+    }
+
+    const ok = await saveResident(novo)
+    if (ok) {
+      closeModal()
+      await renderView()
+    } else {
+      btn.disabled = false
+      btn.textContent = "Salvar Cadastro"
+    }
+  })
+}
+
+function bindCameraModalForm() {
+  const cameraForm = document.getElementById("cameraForm")
+  if (!cameraForm || cameraForm.dataset.modalBound === "true") return
+  cameraForm.dataset.modalBound = "true"
+
+  cameraForm.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    const btn = cameraForm.querySelector("[type=submit]")
+    btn.disabled    = true
+    btn.textContent = "Salvando..."
+
+    const novo = {
+      nome:           document.getElementById("camNome").value.trim(),
+      localizacao:    document.getElementById("camLocal").value.trim(),
+      tipo_camera_id: document.getElementById("camTipo").value
+    }
+
+    const ok = await saveCamara(novo)
+    if (ok) {
+      closeModal()
+      await renderView()
+    } else {
+      btn.disabled = false
+      btn.textContent = "Salvar Camera"
+    }
+  })
+}
+
+function bindAutorizacaoModalForm() {
+  const autorizacaoForm = document.getElementById("autorizacaoForm")
+  if (!autorizacaoForm || autorizacaoForm.dataset.modalBound === "true") return
+  autorizacaoForm.dataset.modalBound = "true"
+
+  const atPlacaInput = document.getElementById("atPlaca")
+  atPlacaInput.addEventListener("input", () => atPlacaInput.value = onlyPlate(atPlacaInput.value))
+
+  autorizacaoForm.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    const btn = autorizacaoForm.querySelector("[type=submit]")
+    btn.disabled    = true
+    btn.textContent = "Criando..."
+
+    const placa  = onlyPlate(document.getElementById("atPlaca").value)
+    const inicio = document.getElementById("atInicio").value
+    const fim    = document.getElementById("atFim").value
+
+    if (placa.length < 7) {
+      showToast("Placa invalida (minimo 7 caracteres).")
+      btn.disabled = false
+      btn.textContent = "Criar Autorizacao"
+      return
+    }
+    if (new Date(fim) <= new Date(inicio)) {
+      showToast("A data de fim deve ser posterior ao inicio.")
+      btn.disabled = false
+      btn.textContent = "Criar Autorizacao"
+      return
+    }
+
+    const novo = {
+      placa,
+      nome_autorizado: document.getElementById("atNome").value.trim(),
+      motivo:          document.getElementById("atMotivo").value.trim(),
+      data_inicio:     new Date(inicio).toISOString(),
+      data_fim:        new Date(fim).toISOString()
+    }
+
+    const ok = await saveAutorizacao(novo)
+    if (ok) {
+      closeModal()
+      await renderView()
+    } else {
+      btn.disabled = false
+      btn.textContent = "Criar Autorizacao"
+    }
+  })
+}
 
 function _updateBackendChip() {
   const chip = document.getElementById("backendChip")
@@ -1537,6 +1824,7 @@ function _promptChangeBackend() {
 // ── Bootstrap ─────────────────────────────────────────────────
 
 async function bootstrap() {
+  bindModalShell()
   document.getElementById("btnLogin").addEventListener("click", login)
   document.getElementById("loginSenha").addEventListener("keydown", e => {
     if (e.key === "Enter") login()

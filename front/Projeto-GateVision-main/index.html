@@ -68,6 +68,17 @@
     </main>
   </section>
 
+  <div id="appModal" class="modal-shell hidden">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
+      <div class="modal-head">
+        <strong id="appModalTitle">Formulario</strong>
+        <button class="btn" type="button" data-close-modal>Fechar</button>
+      </div>
+      <div id="appModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js" onerror="void(0)"></script>
