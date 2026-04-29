@@ -501,50 +501,77 @@ async function renderDashboard() {
   APP._dashboardCache = { logs, liberados, negados }
 
   return `
-    <div class="dashboard-toolbar">
-      <div>
-        <label class="login-sub">Periodo dos graficos</label>
-        <select id="dashboardFilter" class="input">
-          <option value="7"   ${String(APP.dashboardFilterDays) === "7"   ? "selected" : ""}>Ultimos 7 dias</option>
-          <option value="15"  ${String(APP.dashboardFilterDays) === "15"  ? "selected" : ""}>Ultimos 15 dias</option>
-          <option value="30"  ${String(APP.dashboardFilterDays) === "30"  ? "selected" : ""}>Ultimos 30 dias</option>
-          <option value="all" ${String(APP.dashboardFilterDays) === "all" ? "selected" : ""}>Todos os registros</option>
-        </select>
-      </div>
-      <button id="btnApplyDashboardFilter" class="btn">Filtrar graficos</button>
-    </div>
-    <div class="grid-3">
-      <div class="kpi"><div class="kpi-label">Clientes cadastrados</div><div class="kpi-val">${totalClientes}</div></div>
-      <div class="kpi"><div class="kpi-label">Acessos permitidos</div><div class="kpi-val">${liberados}</div><div class="kpi-sub">${percent}% de aprovacao</div></div>
-      <div class="kpi"><div class="kpi-label">Acessos negados</div><div class="kpi-val">${negados}</div><div class="kpi-sub">${total} analisados</div></div>
-    </div>
-    <div class="chart-grid">
-      <div class="chart-card">
-        <div class="chart-title">Historico de acessos por dia</div>
-        <div class="chart-canvas-wrap"><canvas id="chartTimeline"></canvas></div>
-      </div>
-      <div class="chart-card">
-        <div class="chart-title">Distribuicao de acessos</div>
-        <div class="chart-canvas-wrap"><canvas id="chartDistribution"></canvas></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head">Ultimos acessos registrados</div>
-      <div class="card-body">
-        ${latest.length ? `
-          <div class="last-access-list">
-            ${latest.map(item => {
-              const { label, ok } = logStatus(item)
-              const nome = item.proprietario || "-"
-              return `
-                <div class="last-access-item">
-                  <div class="last-access-main">${item.placa_detectada} - ${nome}</div>
-                  <div class="last-access-status ${ok ? "ok" : "err"}">${label}</div>
-                  <div class="last-access-meta">${formatDateTime(item.registrado_em)} - ${item.camera || "-"}</div>
-                </div>`
-            }).join("")}
+    <div class="page-stack">
+      <div class="hero-card">
+        <div class="hero-grid">
+          <div>
+            <div class="eyebrow">Visao operacional</div>
+            <h2 class="section-title">Acesso monitorado com leitura de placa em tempo real</h2>
+            <p class="section-sub">Resumo do fluxo da portaria, desempenho de liberações e acompanhamento das últimas ocorrências registradas pelo sistema.</p>
+            <div class="hero-meta">
+              <span class="chip ok">${liberados} liberados</span>
+              <span class="chip warn">${negados} negados</span>
+              <span class="chip">${totalClientes} clientes cadastrados</span>
+            </div>
           </div>
-        ` : `<div class="empty">Sem registros para o periodo selecionado.</div>`}
+          <div class="hero-note">
+            <div>
+              <div class="eyebrow">Taxa de aprovacao</div>
+              <strong>${percent}%</strong>
+            </div>
+            <p class="section-sub">Base calculada sobre ${total} acessos avaliados no periodo filtrado.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="dashboard-toolbar">
+        <div>
+          <label class="login-sub">Periodo dos graficos</label>
+          <select id="dashboardFilter" class="input">
+            <option value="7"   ${String(APP.dashboardFilterDays) === "7"   ? "selected" : ""}>Ultimos 7 dias</option>
+            <option value="15"  ${String(APP.dashboardFilterDays) === "15"  ? "selected" : ""}>Ultimos 15 dias</option>
+            <option value="30"  ${String(APP.dashboardFilterDays) === "30"  ? "selected" : ""}>Ultimos 30 dias</option>
+            <option value="all" ${String(APP.dashboardFilterDays) === "all" ? "selected" : ""}>Todos os registros</option>
+          </select>
+        </div>
+        <button id="btnApplyDashboardFilter" class="btn">Filtrar graficos</button>
+      </div>
+
+      <div class="grid-3">
+        <div class="kpi"><div class="kpi-label">Clientes cadastrados</div><div class="kpi-val">${totalClientes}</div><div class="kpi-sub">Base ativa monitorada</div></div>
+        <div class="kpi"><div class="kpi-label">Acessos permitidos</div><div class="kpi-val">${liberados}</div><div class="kpi-sub">${percent}% de aprovacao</div></div>
+        <div class="kpi"><div class="kpi-label">Acessos negados</div><div class="kpi-val">${negados}</div><div class="kpi-sub">${total} analisados</div></div>
+      </div>
+
+      <div class="chart-grid">
+        <div class="chart-card">
+          <div class="chart-title">Historico de acessos por dia</div>
+          <div class="chart-canvas-wrap"><canvas id="chartTimeline"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <div class="chart-title">Distribuicao de acessos</div>
+          <div class="chart-canvas-wrap"><canvas id="chartDistribution"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">Ultimos acessos registrados</div>
+        <div class="card-body">
+          ${latest.length ? `
+            <div class="last-access-list">
+              ${latest.map(item => {
+                const { label, ok } = logStatus(item)
+                const nome = item.proprietario || "-"
+                return `
+                  <div class="last-access-item">
+                    <div class="last-access-main">${item.placa_detectada} - ${nome}</div>
+                    <div class="last-access-status ${ok ? "ok" : "err"}">${label}</div>
+                    <div class="last-access-meta">${formatDateTime(item.registrado_em)} - ${item.camera || "-"}</div>
+                  </div>`
+              }).join("")}
+            </div>
+          ` : `<div class="empty">Sem registros para o periodo selecionado.</div>`}
+        </div>
       </div>
     </div>`
 }
@@ -573,8 +600,23 @@ function drawDashboardCharts() {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: "top" } },
-      scales:  { y: { beginAtZero: true, ticks: { precision: 0 } } }
+      plugins: {
+        legend: {
+          position: "top",
+          labels: { color: "#dce7dc" }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: "#8fa291" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { precision: 0, color: "#8fa291" },
+          grid: { color: "rgba(255,255,255,0.06)" }
+        }
+      }
     }
   })
 
@@ -584,7 +626,16 @@ function drawDashboardCharts() {
       labels: ["Permitidos", "Negados"],
       datasets: [{ data: [liberados, negados], backgroundColor: ["#1f8b56", "#c33a2f"], borderWidth: 0 }]
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom" } } }
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: { color: "#dce7dc" }
+        }
+      }
+    }
   })
 }
 
@@ -723,10 +774,18 @@ async function deleteResident(pessoaId) {
 async function renderCadastroAdmin() {
   const residents = await fetchResidents()
   return `
-    <div class="card">
-      <div class="card-head">Novo Cliente / Veiculo</div>
-      <div class="card-body">
-        <form id="residentForm" class="grid-2">
+    <div class="page-stack">
+      <div class="panel-header">
+        <div>
+          <div class="eyebrow">Cadastro residencial</div>
+          <h2 class="section-title">Gestao de moradores e veiculos</h2>
+          <p class="section-sub">Cadastre moradores, associe placas e mantenha a base de acesso sempre atualizada.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Novo Cliente / Veiculo</div>
+        <div class="card-body">
+          <form id="residentForm" class="form-grid">
           <div><label class="login-sub">Nome completo</label><input required id="fNome" class="input" /></div>
           <div><label class="login-sub">CPF</label><input required id="fCpf" class="input" maxlength="14" /></div>
           <div><label class="login-sub">Apartamento</label><input required id="fApto" class="input" /></div>
@@ -734,14 +793,15 @@ async function renderCadastroAdmin() {
           <div><label class="login-sub">Placa</label><input required id="fPlaca" class="input mono" maxlength="7" /></div>
           <div><label class="login-sub">Veiculo</label><input id="fVeiculo" class="input" /></div>
           <div><label class="login-sub">Vaga</label><input id="fVaga" class="input" /></div>
-          <div style="display:flex; align-items:end;"><button class="btn primary" type="submit">Salvar Cadastro</button></div>
-        </form>
+          <div class="form-actions"><button class="btn primary" type="submit">Salvar Cadastro</button></div>
+          </form>
+        </div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-head">Clientes Cadastrados</div>
-      <div class="card-body table-wrap">
-        ${renderResidentsTable(residents, true)}
+      <div class="card">
+        <div class="card-head">Clientes Cadastrados</div>
+        <div class="card-body table-wrap">
+          ${renderResidentsTable(residents, true)}
+        </div>
       </div>
     </div>`
 }
@@ -775,10 +835,19 @@ function renderResidentsTable(residents, allowDelete) {
 async function renderResidentsReadOnly() {
   const residents = await fetchResidents()
   return `
-    <div class="card">
-      <div class="card-head">Cadastro de Clientes (Leitura)</div>
-      <div class="card-body table-wrap">
-        ${renderResidentsTable(residents, false)}
+    <div class="page-stack">
+      <div class="panel-header">
+        <div>
+          <div class="eyebrow">Consulta</div>
+          <h2 class="section-title">Base de clientes</h2>
+          <p class="section-sub">Visualização em modo leitura para conferência rápida dos moradores e placas vinculadas.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Cadastro de Clientes (Leitura)</div>
+        <div class="card-body table-wrap">
+          ${renderResidentsTable(residents, false)}
+        </div>
       </div>
     </div>`
 }
@@ -796,30 +865,39 @@ async function renderLogs() {
 
     const logs = data || []
     return `
-      <div class="card">
-        <div class="card-head">Historico de acessos</div>
-        <div class="card-body table-wrap">
-          ${logs.length ? `
-            <table>
-              <thead>
-                <tr><th>Data/Hora</th><th>Placa</th><th>Morador</th><th>Camera</th><th>Status</th></tr>
-              </thead>
-              <tbody>
-                ${logs.map(l => {
-                  const { label, ok } = logStatus(l)
-                  const nome = l.proprietario || "-"
-                  return `
-                    <tr>
-                      <td>${formatDateTime(l.registrado_em)}</td>
-                      <td class="mono">${l.placa_detectada}</td>
-                      <td>${nome}</td>
-                      <td>${l.camera || "-"}</td>
-                      <td style="color:${ok ? "#1f8b56" : "#c33a2f"}">${label}</td>
-                    </tr>`
-                }).join("")}
-              </tbody>
-            </table>
-          ` : `<div class="empty">Sem registros de acesso no momento.</div>`}
+      <div class="page-stack">
+        <div class="panel-header">
+          <div>
+            <div class="eyebrow">Rastreabilidade</div>
+            <h2 class="section-title">Historico de acessos</h2>
+            <p class="section-sub">Até 200 registros recentes para auditoria da entrada, identificação da câmera e decisão tomada.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">Historico de acessos</div>
+          <div class="card-body table-wrap">
+            ${logs.length ? `
+              <table>
+                <thead>
+                  <tr><th>Data/Hora</th><th>Placa</th><th>Morador</th><th>Camera</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  ${logs.map(l => {
+                    const { label, ok } = logStatus(l)
+                    const nome = l.proprietario || "-"
+                    return `
+                      <tr>
+                        <td>${formatDateTime(l.registrado_em)}</td>
+                        <td class="mono">${l.placa_detectada}</td>
+                        <td>${nome}</td>
+                        <td>${l.camera || "-"}</td>
+                        <td class="${ok ? "table-status-ok" : "table-status-err"}">${label}</td>
+                      </tr>`
+                  }).join("")}
+                </tbody>
+              </table>
+            ` : `<div class="empty">Sem registros de acesso no momento.</div>`}
+          </div>
         </div>
       </div>`
   } catch (e) {
@@ -873,49 +951,92 @@ function renderMonitorPorteiro() {
         : `<div class="status-empty">Placa identificada. Escolha liberar ou negar acesso.</div>`
 
   return `
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-head">Camera - Entrada Principal</div>
-        <div class="card-body">
-          <div class="camera" id="cameraPreview">
-            <div id="imgPreviewWrap" style="display:none;width:100%;height:100%;overflow:hidden;">
-              <img id="imgPreview" style="width:100%;height:100%;object-fit:contain;" />
-            </div>
-            <video id="webcamVideo" class="webcam-video" style="display:none;" autoplay playsinline muted></video>
-            <div id="cameraPlaceholder">
-              Envie uma foto, use a webcam<br>ou digite a placa manualmente
+    <div class="page-stack">
+      <div class="hero-card">
+        <div class="hero-grid">
+          <div>
+            <div class="eyebrow">Monitor de leitura</div>
+            <h2 class="section-title">Triagem de veículos na entrada principal</h2>
+            <p class="section-sub">Envie imagem, use a webcam ou digite a placa manualmente para validar a autorização e decidir a abertura do portão.</p>
+            <div class="hero-meta">
+              ${statusChip}
             </div>
           </div>
-          <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap;">
-            <input id="detectInput" class="input mono" placeholder="Ex: BRA2E24" maxlength="7" style="flex:1;min-width:120px;">
-            <button id="btnDetect" class="btn primary">Identificar placa</button>
-          </div>
-          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-            <input type="file" id="imageInput" accept="image/*" style="display:none;">
-            <button id="btnUpload" class="btn" style="flex:1;">Enviar foto</button>
-            <button id="btnDetectImage" class="btn primary" style="flex:1;" disabled>Detectar na foto</button>
-          </div>
-          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-            <button id="btnStartWebcam" class="btn" style="flex:1;">Usar webcam</button>
-            <button id="btnDetectWebcam" class="btn primary" style="flex:1;" disabled>Detectar pela webcam</button>
-            <button id="btnStopWebcam" class="btn err" style="display:none;">Parar webcam</button>
+          <div class="hero-note">
+            <div>
+              <div class="eyebrow">Ultima placa</div>
+              <strong class="mono">${d ? d.placa : "---"}</strong>
+            </div>
+            <p class="section-sub">${d && d.morador ? d.morador.nome : "Aguardando identificação para exibir dados do morador."}</p>
           </div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-head">Resultado da Leitura</div>
-        <div class="card-body">
-          <div class="status-image-wrap">${statusImage}</div>
-          <div style="margin-bottom:10px;">${statusChip}</div>
-          <div class="status-box">
-            <div class="row"><span>Placa</span><strong class="mono">${d ? d.placa : "---"}</strong></div>
-            <div class="row"><span>Morador</span><strong>${d && d.morador ? d.morador.nome : "-"}</strong></div>
-            <div class="row"><span>CPF</span><strong>${d && d.morador ? formatCPF(d.morador.cpf) : "-"}</strong></div>
-            <div class="row"><span>Apartamento</span><strong>${d && d.morador ? `${d.morador.apartamento} - Torre ${d.morador.torre}` : "-"}</strong></div>
+
+      <div class="monitor-layout">
+        <div class="monitor-tools">
+          <div class="card">
+            <div class="card-head">Captura e leitura</div>
+            <div class="card-body">
+              <div class="camera" id="cameraPreview">
+                <div id="imgPreviewWrap" style="display:none;width:100%;height:100%;overflow:hidden;">
+                  <img id="imgPreview" style="width:100%;height:100%;object-fit:contain;" />
+                </div>
+                <video id="webcamVideo" class="webcam-video" style="display:none;" autoplay playsinline muted></video>
+                <div id="cameraPlaceholder">
+                  Envie uma foto, use a webcam<br>ou digite a placa manualmente
+                </div>
+              </div>
+              <div class="monitor-toolbar" style="margin-top:12px;">
+                <input id="detectInput" class="input mono" placeholder="Ex: BRA2E24" maxlength="7">
+                <button id="btnDetect" class="btn primary">Identificar placa</button>
+              </div>
+              <div class="monitor-toolbar" style="margin-top:10px;">
+                <input type="file" id="imageInput" accept="image/*" style="display:none;">
+                <button id="btnUpload" class="btn">Enviar foto</button>
+                <button id="btnDetectImage" class="btn primary" disabled>Detectar na foto</button>
+              </div>
+              <div class="monitor-toolbar" style="margin-top:10px;">
+                <button id="btnStartWebcam" class="btn">Usar webcam</button>
+                <button id="btnDetectWebcam" class="btn primary" disabled>Detectar pela webcam</button>
+                <button id="btnStopWebcam" class="btn err" style="display:none;">Parar webcam</button>
+              </div>
+            </div>
           </div>
-          <div class="actions" style="margin-top:10px;">
-            <button id="btnOpenGate" class="btn ok" ${d && !decision ? "" : "disabled"}>Abrir portao</button>
-            <button id="btnDeny"     class="btn err" ${d && !decision ? "" : "disabled"}>Negar acesso</button>
+
+          <div class="monitor-banner">
+            <strong>Fluxo recomendado</strong>
+            <p class="section-sub">Primeiro capture a placa. Depois confira o morador identificado e finalize com liberação ou negação para registrar o evento no histórico.</p>
+          </div>
+        </div>
+
+        <div class="monitor-result">
+          <div class="card">
+            <div class="card-head">Resultado da leitura</div>
+            <div class="card-body">
+              <div class="status-image-wrap">${statusImage}</div>
+              <div style="margin-bottom:12px;">${statusChip}</div>
+              <div class="status-box">
+                <div class="row"><span>Placa</span><strong class="mono">${d ? d.placa : "---"}</strong></div>
+                <div class="row"><span>Morador</span><strong>${d && d.morador ? d.morador.nome : "-"}</strong></div>
+                <div class="row"><span>CPF</span><strong>${d && d.morador ? formatCPF(d.morador.cpf) : "-"}</strong></div>
+                <div class="row"><span>Apartamento</span><strong>${d && d.morador ? `${d.morador.apartamento} - Torre ${d.morador.torre}` : "-"}</strong></div>
+              </div>
+              <div class="actions" style="margin-top:12px;">
+                <button id="btnOpenGate" class="btn ok" ${d && !decision ? "" : "disabled"}>Abrir portao</button>
+                <button id="btnDeny" class="btn err" ${d && !decision ? "" : "disabled"}>Negar acesso</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="split-card">
+            <div class="metric-mini">
+              <span>Status atual</span>
+              <strong>${decision ? decision.toUpperCase() : "EM ANALISE"}</strong>
+            </div>
+            <div class="metric-mini">
+              <span>Origem</span>
+              <strong>${d ? "PLACA DETECTADA" : "AGUARDANDO"}</strong>
+            </div>
           </div>
         </div>
       </div>
@@ -979,10 +1100,18 @@ async function deleteCamara(id) {
 async function renderCameras() {
   const cameras = await fetchCameras()
   return `
-    <div class="card">
-      <div class="card-head">Nova Camera</div>
-      <div class="card-body">
-        <form id="cameraForm" class="grid-2">
+    <div class="page-stack">
+      <div class="panel-header">
+        <div>
+          <div class="eyebrow">Infraestrutura</div>
+          <h2 class="section-title">Cameras do sistema</h2>
+          <p class="section-sub">Cadastre os pontos de captura e organize os equipamentos de entrada, saída e garagem.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Nova Camera</div>
+        <div class="card-body">
+          <form id="cameraForm" class="form-grid">
           <div><label class="login-sub">Nome da Camera</label><input required id="camNome" class="input" placeholder="Ex: CAM-PORT-01" /></div>
           <div><label class="login-sub">Localizacao</label><input required id="camLocal" class="input" placeholder="Ex: Portaria Principal" /></div>
           <div>
@@ -994,31 +1123,32 @@ async function renderCameras() {
               <option value="4">Estacionamento</option>
             </select>
           </div>
-          <div style="display:flex; align-items:end;">
+          <div class="form-actions">
             <button class="btn primary" type="submit">Salvar Camera</button>
           </div>
-        </form>
+          </form>
+        </div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-head">Cameras Cadastradas</div>
-      <div class="card-body table-wrap">
-        ${cameras.length ? `
-          <table>
-            <thead>
-              <tr><th>Nome</th><th>Localizacao</th><th>Tipo</th><th>Acoes</th></tr>
-            </thead>
-            <tbody>
-              ${cameras.map(c => `
-                <tr>
-                  <td>${c.nome}</td>
-                  <td>${c.localizacao}</td>
-                  <td>${c.tipo}</td>
-                  <td><button class="btn" data-del-cam="${c.id}">Remover</button></td>
-                </tr>`).join("")}
-            </tbody>
-          </table>
-        ` : `<div class="empty">Nenhuma camera cadastrada.</div>`}
+      <div class="card">
+        <div class="card-head">Cameras Cadastradas</div>
+        <div class="card-body table-wrap">
+          ${cameras.length ? `
+            <table>
+              <thead>
+                <tr><th>Nome</th><th>Localizacao</th><th>Tipo</th><th>Acoes</th></tr>
+              </thead>
+              <tbody>
+                ${cameras.map(c => `
+                  <tr>
+                    <td>${c.nome}</td>
+                    <td>${c.localizacao}</td>
+                    <td>${c.tipo}</td>
+                    <td><button class="btn" data-del-cam="${c.id}">Remover</button></td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          ` : `<div class="empty">Nenhuma camera cadastrada.</div>`}
+        </div>
       </div>
     </div>`
 }
@@ -1081,43 +1211,52 @@ async function deleteAutorizacao(id) {
 async function renderAutorizacoes() {
   const lista = await fetchAutorizacoes()
   return `
-    <div class="card">
-      <div class="card-head">Nova Autorizacao Temporaria</div>
-      <div class="card-body">
-        <form id="autorizacaoForm" class="grid-2">
+    <div class="page-stack">
+      <div class="panel-header">
+        <div>
+          <div class="eyebrow">Permissoes temporarias</div>
+          <h2 class="section-title">Liberacoes para visitantes</h2>
+          <p class="section-sub">Cadastre acessos com validade limitada para prestadores, entregas e visitantes fora da base principal.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">Nova Autorizacao Temporaria</div>
+        <div class="card-body">
+          <form id="autorizacaoForm" class="form-grid">
           <div><label class="login-sub">Placa</label><input required id="atPlaca" class="input mono" maxlength="7" placeholder="Ex: TMP1A23" /></div>
           <div><label class="login-sub">Nome do Visitante</label><input required id="atNome" class="input" placeholder="Ex: Pedro Encanador" /></div>
           <div><label class="login-sub">Motivo</label><input id="atMotivo" class="input" placeholder="Ex: manutencao, visita, entrega" /></div>
           <div></div>
           <div><label class="login-sub">Inicio</label><input required id="atInicio" type="datetime-local" class="input" value="${defaultDatetime()}" /></div>
           <div><label class="login-sub">Fim</label><input required id="atFim" type="datetime-local" class="input" value="${defaultDatetime(24)}" /></div>
-          <div style="display:flex; align-items:end;">
+          <div class="form-actions">
             <button class="btn primary" type="submit">Criar Autorizacao</button>
           </div>
-        </form>
+          </form>
+        </div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-head">Autorizacoes Ativas</div>
-      <div class="card-body table-wrap">
-        ${lista.length ? `
-          <table>
-            <thead>
-              <tr><th>Placa</th><th>Visitante</th><th>Motivo</th><th>Inicio</th><th>Validade</th><th>Acoes</th></tr>
-            </thead>
-            <tbody>
-              ${lista.map(a => `
-                <tr>
-                  <td class="mono">${a.placa}</td>
-                  <td>${a.nome_autorizado}</td>
-                  <td>${a.motivo || "-"}</td>
-                  <td>${formatDateTime(a.data_inicio)}</td>
-                  <td>${formatDateTime(a.data_fim)}</td>
-                  <td><button class="btn err" data-del-auth="${a.id}">Cancelar</button></td>
-                </tr>`).join("")}
-            </tbody>
-          </table>
-        ` : `<div class="empty">Nenhuma autorizacao ativa no momento.</div>`}
+      <div class="card">
+        <div class="card-head">Autorizacoes Ativas</div>
+        <div class="card-body table-wrap">
+          ${lista.length ? `
+            <table>
+              <thead>
+                <tr><th>Placa</th><th>Visitante</th><th>Motivo</th><th>Inicio</th><th>Validade</th><th>Acoes</th></tr>
+              </thead>
+              <tbody>
+                ${lista.map(a => `
+                  <tr>
+                    <td class="mono">${a.placa}</td>
+                    <td>${a.nome_autorizado}</td>
+                    <td>${a.motivo || "-"}</td>
+                    <td>${formatDateTime(a.data_inicio)}</td>
+                    <td>${formatDateTime(a.data_fim)}</td>
+                    <td><button class="btn err" data-del-auth="${a.id}">Cancelar</button></td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          ` : `<div class="empty">Nenhuma autorizacao ativa no momento.</div>`}
+        </div>
       </div>
     </div>`
 }
