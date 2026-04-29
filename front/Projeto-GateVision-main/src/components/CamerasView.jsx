@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
-import { deleteCamera, fetchCameras, saveCamera } from "../lib/api";
+import { deleteCamera, fetchCameras, saveCamera, updateCamera } from "../lib/api";
 
-function CameraForm({ loading, onSubmit, onClose }) {
+function CameraForm({ initialData, loading, onSubmit, onClose }) {
   const [form, setForm] = useState({ nome: "", localizacao: "", tipo_camera_id: "1" });
+
+  useEffect(() => {
+    setForm({
+      nome: initialData?.nome || "",
+      localizacao: initialData?.localizacao || "",
+      tipo_camera_id: initialData?.tipo_camera_id || "1"
+    });
+  }, [initialData]);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -35,6 +43,7 @@ export default function CamerasView({ onToast }) {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingCamera, setEditingCamera] = useState(null);
 
   async function loadCameras() {
     setLoading(true);
@@ -54,9 +63,15 @@ export default function CamerasView({ onToast }) {
   async function handleSave(form) {
     setSaving(true);
     try {
-      await saveCamera(form);
-      onToast("Camera salva com sucesso!", "ok");
+      if (editingCamera) {
+        await updateCamera(editingCamera.id, form);
+        onToast("Camera atualizada com sucesso!", "ok");
+      } else {
+        await saveCamera(form);
+        onToast("Camera salva com sucesso!", "ok");
+      }
       setOpen(false);
+      setEditingCamera(null);
       await loadCameras();
     } catch (error) {
       onToast(`Erro ao salvar camera: ${error.message}`);
@@ -76,6 +91,21 @@ export default function CamerasView({ onToast }) {
     }
   }
 
+  function handleOpenCreate() {
+    setEditingCamera(null);
+    setOpen(true);
+  }
+
+  function handleOpenEdit(camera) {
+    setEditingCamera(camera);
+    setOpen(true);
+  }
+
+  function handleCloseModal() {
+    setOpen(false);
+    setEditingCamera(null);
+  }
+
   return (
     <div className="page-stack">
       <div className="panel-header">
@@ -85,7 +115,7 @@ export default function CamerasView({ onToast }) {
           <p className="section-sub">Cadastre os pontos de captura e organize os equipamentos de entrada, saida e garagem.</p>
         </div>
         <div className="panel-actions">
-          <button className="btn primary" onClick={() => setOpen(true)} type="button">Cadastrar camera</button>
+          <button className="btn primary" onClick={handleOpenCreate} type="button">Cadastrar camera</button>
         </div>
       </div>
 
@@ -104,7 +134,12 @@ export default function CamerasView({ onToast }) {
                     <td>{camera.nome}</td>
                     <td>{camera.localizacao}</td>
                     <td>{camera.tipo}</td>
-                    <td><button className="btn" onClick={() => handleDelete(camera.id)} type="button">Remover</button></td>
+                    <td>
+                      <div className="actions">
+                        <button className="btn" onClick={() => handleOpenEdit(camera)} type="button">Editar</button>
+                        <button className="btn err" onClick={() => handleDelete(camera.id)} type="button">Remover</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -114,8 +149,8 @@ export default function CamerasView({ onToast }) {
         </div>
       </div>
 
-      <Modal open={open} title="Nova Camera" onClose={() => setOpen(false)}>
-        <CameraForm loading={saving} onSubmit={handleSave} onClose={() => setOpen(false)} />
+      <Modal open={open} title={editingCamera ? "Editar Camera" : "Nova Camera"} onClose={handleCloseModal}>
+        <CameraForm initialData={editingCamera} loading={saving} onSubmit={handleSave} onClose={handleCloseModal} />
       </Modal>
     </div>
   );

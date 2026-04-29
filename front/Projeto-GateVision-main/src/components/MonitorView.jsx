@@ -33,13 +33,15 @@ export default function MonitorView({ backendUrl, onToast }) {
   const [cameraDevices, setCameraDevices] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
 
-  const fileInputRef = useRef(null);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const timerRef = useRef(null);
   const detectInFlightRef = useRef(false);
   const ocrInFlightRef = useRef(false);
   const lastProcessedPlateRef = useRef(null);
+  const lastFrameSampleRef = useRef(null);
+  const stableFrameCountRef = useRef(0);
+  const resetTimerRef = useRef(null);
 
   useEffect(() => {
     if (videoRef.current && streamRef.current) {
@@ -61,6 +63,9 @@ export default function MonitorView({ backendUrl, onToast }) {
   }, []);
 
   useEffect(() => () => {
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+    }
     stopWebcam();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
   }, [previewUrl]);
@@ -95,10 +100,84 @@ export default function MonitorView({ backendUrl, onToast }) {
     lastProcessedPlateRef.current = null;
   }
 
+  function clearMonitorState() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setDetection(null);
+    setDecision(null);
+    setManualPlate("");
+    setPreviewUrl("");
+    setProcessingLabel("");
+    resetProcessedPlate();
+    resetStabilityTracking();
+  }
+
+  function scheduleMonitorReset() {
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+    }
+
+    resetTimerRef.current = window.setTimeout(() => {
+      clearMonitorState();
+      resetTimerRef.current = null;
+    }, 4000);
+  }
+
+  function resetStabilityTracking() {
+    lastFrameSampleRef.current = null;
+    stableFrameCountRef.current = 0;
+  }
+
+  function isCurrentFrameStable() {
+    if (!videoRef.current) return false;
+    if (videoRef.current.readyState < 2) return false;
+
+    const sampleCanvas = document.createElement("canvas");
+    sampleCanvas.width = 32;
+    sampleCanvas.height = 18;
+
+    const context = sampleCanvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return false;
+
+    context.drawImage(videoRef.current, 0, 0, sampleCanvas.width, sampleCanvas.height);
+    const imageData = context.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
+    const currentSample = new Uint8Array(sampleCanvas.width * sampleCanvas.height);
+
+    for (let sourceIndex = 0, targetIndex = 0; sourceIndex < imageData.length; sourceIndex += 4, targetIndex += 1) {
+      currentSample[targetIndex] = Math.round(
+        (imageData[sourceIndex] * 0.299) +
+        (imageData[sourceIndex + 1] * 0.587) +
+        (imageData[sourceIndex + 2] * 0.114)
+      );
+    }
+
+    const previousSample = lastFrameSampleRef.current;
+    lastFrameSampleRef.current = currentSample;
+
+    if (!previousSample || previousSample.length !== currentSample.length) {
+      stableFrameCountRef.current = 0;
+      return false;
+    }
+
+    let totalDifference = 0;
+    for (let index = 0; index < currentSample.length; index += 1) {
+      totalDifference += Math.abs(currentSample[index] - previousSample[index]);
+    }
+
+    const averageDifference = totalDifference / currentSample.length;
+    if (averageDifference < 18) {
+      stableFrameCountRef.current += 1;
+    } else {
+      stableFrameCountRef.current = 0;
+    }
+
+    return stableFrameCountRef.current >= 1;
+  }
+
   async function openGate(detected, autoTriggered = false) {
     if (!detected) return;
     await registerAccessOpen(detected.placa);
     setDecision("liberado");
+    scheduleMonitorReset();
     onToast(autoTriggered ? "Placa autorizada. Portao aberto automaticamente." : "Portao aberto pelo porteiro.", "ok");
     try {
       await triggerGate(backendUrl);
@@ -153,7 +232,11 @@ export default function MonitorView({ backendUrl, onToast }) {
 
       const clean = onlyPlate(result.placa);
       setManualPlate(clean);
-      if (fromWebcam) stopWebcam();
+      if (fromWebcam) {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        setPreviewUrl(URL.createObjectURL(file));
+        stopWebcam();
+      }
       await processPlate(clean, true);
     } catch (error) {
       if (!fromWebcam) {
@@ -210,6 +293,8 @@ export default function MonitorView({ backendUrl, onToast }) {
       streamRef.current = stream;
       setWebcamActive(true);
       setPreviewUrl("");
+      setProcessingLabel("Aguardando a placa e a camera estabilizarem...");
+      resetStabilityTracking();
       if (activeCameraId) setSelectedCameraId(activeCameraId);
       await loadCameraDevices(activeCameraId);
 
@@ -224,10 +309,13 @@ export default function MonitorView({ backendUrl, onToast }) {
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = window.setInterval(() => {
         if (!detectInFlightRef.current && !ocrInFlightRef.current) {
-          void captureAndDetect(true);
+          if (isCurrentFrameStable()) {
+            void captureAndDetect(true);
+          }
         }
-      }, 3000);
+      }, 350);
     } catch (error) {
+      setProcessingLabel("");
       const message = error.name === "NotAllowedError"
         ? "Permissao de camera negada. Permita o acesso no navegador."
         : error.name === "NotFoundError"
@@ -250,6 +338,10 @@ export default function MonitorView({ backendUrl, onToast }) {
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+    }
+    resetStabilityTracking();
+    if (processingLabel === "Aguardando a placa e a camera estabilizarem...") {
+      setProcessingLabel("");
     }
     setWebcamActive(false);
   }
@@ -290,6 +382,7 @@ export default function MonitorView({ backendUrl, onToast }) {
     try {
       await registerAccessDenied(detection.placa);
       setDecision("negado");
+      scheduleMonitorReset();
       onToast("Acesso negado registrado.", "ok");
     } catch (error) {
       onToast(`Erro ao registrar negacao: ${error.message}`);
@@ -375,11 +468,6 @@ export default function MonitorView({ backendUrl, onToast }) {
               </div>
 
               <div className="monitor-toolbar" style={{ marginTop: 10 }}>
-                <input ref={fileInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
-                <button className="btn" onClick={() => fileInputRef.current?.click()} type="button">Enviar foto</button>
-              </div>
-
-              <div className="monitor-toolbar" style={{ marginTop: 10 }}>
                 <button className="btn" onClick={startWebcam} type="button" disabled={webcamActive}>Usar webcam</button>
                 <button className="btn err" onClick={stopWebcam} type="button" style={{ display: webcamActive ? "" : "none" }}>Parar webcam</button>
               </div>
@@ -388,10 +476,6 @@ export default function MonitorView({ backendUrl, onToast }) {
             </div>
           </div>
 
-          <div className="monitor-banner">
-            <strong>Fluxo recomendado</strong>
-            <p className="section-sub">A validacao acontece automaticamente quando a placa e reconhecida. Se estiver autorizada, o portao e aberto sem confirmacao manual.</p>
-          </div>
         </div>
 
         <div className="monitor-result">

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
-import { deleteAuthorization, fetchAuthorizations, saveAuthorization } from "../lib/api";
+import { deleteAuthorization, fetchAuthorizations, saveAuthorization, updateAuthorization } from "../lib/api";
 import { defaultDatetime, formatDateTime, onlyPlate } from "../lib/utils";
 
-function AuthorizationForm({ loading, onSubmit, onClose }) {
+function AuthorizationForm({ initialData, loading, onSubmit, onClose }) {
   const [form, setForm] = useState({
     placa: "",
     nome_autorizado: "",
@@ -11,6 +11,16 @@ function AuthorizationForm({ loading, onSubmit, onClose }) {
     data_inicio: defaultDatetime(),
     data_fim: defaultDatetime(24)
   });
+
+  useEffect(() => {
+    setForm({
+      placa: initialData?.placa || "",
+      nome_autorizado: initialData?.nome_autorizado || "",
+      motivo: initialData?.motivo || "",
+      data_inicio: initialData?.data_inicio ? new Date(initialData.data_inicio).toISOString().slice(0, 16) : defaultDatetime(),
+      data_fim: initialData?.data_fim ? new Date(initialData.data_fim).toISOString().slice(0, 16) : defaultDatetime(24)
+    });
+  }, [initialData]);
 
   function update(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -37,6 +47,7 @@ export default function AuthorizationsView({ onToast }) {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingAuthorization, setEditingAuthorization] = useState(null);
 
   async function loadAuthorizations() {
     setLoading(true);
@@ -65,14 +76,22 @@ export default function AuthorizationsView({ onToast }) {
 
     setSaving(true);
     try {
-      await saveAuthorization({
+      const payload = {
         ...form,
         placa: onlyPlate(form.placa),
         data_inicio: new Date(form.data_inicio).toISOString(),
         data_fim: new Date(form.data_fim).toISOString()
-      });
-      onToast("Autorizacao criada com sucesso!", "ok");
+      };
+
+      if (editingAuthorization) {
+        await updateAuthorization(editingAuthorization.id, payload);
+        onToast("Autorizacao atualizada com sucesso!", "ok");
+      } else {
+        await saveAuthorization(payload);
+        onToast("Autorizacao criada com sucesso!", "ok");
+      }
       setOpen(false);
+      setEditingAuthorization(null);
       await loadAuthorizations();
     } catch (error) {
       onToast(`Erro ao criar autorizacao: ${error.message}`);
@@ -92,6 +111,21 @@ export default function AuthorizationsView({ onToast }) {
     }
   }
 
+  function handleOpenCreate() {
+    setEditingAuthorization(null);
+    setOpen(true);
+  }
+
+  function handleOpenEdit(item) {
+    setEditingAuthorization(item);
+    setOpen(true);
+  }
+
+  function handleCloseModal() {
+    setOpen(false);
+    setEditingAuthorization(null);
+  }
+
   return (
     <div className="page-stack">
       <div className="panel-header">
@@ -101,7 +135,7 @@ export default function AuthorizationsView({ onToast }) {
           <p className="section-sub">Cadastre acessos com validade limitada para prestadores, entregas e visitantes fora da base principal.</p>
         </div>
         <div className="panel-actions">
-          <button className="btn primary" onClick={() => setOpen(true)} type="button">Criar autorizacao</button>
+          <button className="btn primary" onClick={handleOpenCreate} type="button">Criar autorizacao</button>
         </div>
       </div>
 
@@ -122,7 +156,12 @@ export default function AuthorizationsView({ onToast }) {
                     <td>{item.motivo || "-"}</td>
                     <td>{formatDateTime(item.data_inicio)}</td>
                     <td>{formatDateTime(item.data_fim)}</td>
-                    <td><button className="btn err" onClick={() => handleDelete(item.id)} type="button">Cancelar</button></td>
+                    <td>
+                      <div className="actions">
+                        <button className="btn" onClick={() => handleOpenEdit(item)} type="button">Editar</button>
+                        <button className="btn err" onClick={() => handleDelete(item.id)} type="button">Cancelar</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -132,8 +171,8 @@ export default function AuthorizationsView({ onToast }) {
         </div>
       </div>
 
-      <Modal open={open} title="Nova Autorizacao Temporaria" onClose={() => setOpen(false)}>
-        <AuthorizationForm loading={saving} onSubmit={handleSave} onClose={() => setOpen(false)} />
+      <Modal open={open} title={editingAuthorization ? "Editar Autorizacao Temporaria" : "Nova Autorizacao Temporaria"} onClose={handleCloseModal}>
+        <AuthorizationForm initialData={editingAuthorization} loading={saving} onSubmit={handleSave} onClose={handleCloseModal} />
       </Modal>
     </div>
   );

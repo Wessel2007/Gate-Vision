@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
-import { deleteResident, fetchResidents, saveResident } from "../lib/api";
+import { deleteResident, fetchResidents, saveResident, updateResident } from "../lib/api";
 import { formatCPF, onlyPlate } from "../lib/utils";
 
-function ResidentForm({ onSubmit, onClose, loading }) {
+function ResidentForm({ initialData, onSubmit, onClose, loading }) {
   const [form, setForm] = useState({
     nome: "",
     cpf: "",
@@ -12,6 +12,17 @@ function ResidentForm({ onSubmit, onClose, loading }) {
     placa: "",
     veiculo: ""
   });
+
+  useEffect(() => {
+    setForm({
+      nome: initialData?.nome || "",
+      cpf: initialData?.cpf ? formatCPF(initialData.cpf) : "",
+      apartamento: initialData?.apartamento && initialData.apartamento !== "-" ? initialData.apartamento : "",
+      torre: initialData?.torre && initialData.torre !== "-" ? initialData.torre : "",
+      placa: initialData?.placa && initialData.placa !== "-" ? initialData.placa : "",
+      veiculo: initialData?.veiculo && initialData.veiculo !== "-" ? initialData.veiculo : ""
+    });
+  }, [initialData]);
 
   function updateField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -33,7 +44,7 @@ function ResidentForm({ onSubmit, onClose, loading }) {
   );
 }
 
-function ResidentsTable({ residents, readOnly, onDelete }) {
+function ResidentsTable({ residents, readOnly, onDelete, onEdit }) {
   if (!residents.length) return <div className="empty">Nenhum cliente cadastrado.</div>;
 
   return (
@@ -53,7 +64,14 @@ function ResidentsTable({ residents, readOnly, onDelete }) {
             <td className="mono">{resident.placa}</td>
             <td>{resident.veiculo || "-"}</td>
             <td>-</td>
-            {!readOnly ? <td><button className="btn" onClick={() => onDelete(resident.id)} type="button">Excluir</button></td> : null}
+            {!readOnly ? (
+              <td>
+                <div className="actions">
+                  <button className="btn" onClick={() => onEdit(resident)} type="button">Editar</button>
+                  <button className="btn err" onClick={() => onDelete(resident.id)} type="button">Excluir</button>
+                </div>
+              </td>
+            ) : null}
           </tr>
         ))}
       </tbody>
@@ -66,6 +84,7 @@ export default function ResidentsView({ readOnly = false, onToast }) {
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingResident, setEditingResident] = useState(null);
 
   async function loadResidents() {
     setLoading(true);
@@ -94,13 +113,21 @@ export default function ResidentsView({ readOnly = false, onToast }) {
 
     setSaving(true);
     try {
-      await saveResident({
+      const payload = {
         ...form,
         cpf: form.cpf.replace(/\D/g, ""),
         placa: onlyPlate(form.placa)
-      });
-      onToast("Cadastro salvo com sucesso!", "ok");
+      };
+
+      if (editingResident) {
+        await updateResident(editingResident.id, payload);
+        onToast("Cadastro atualizado com sucesso!", "ok");
+      } else {
+        await saveResident(payload);
+        onToast("Cadastro salvo com sucesso!", "ok");
+      }
       setOpen(false);
+      setEditingResident(null);
       await loadResidents();
     } catch (error) {
       onToast(`Erro ao salvar cadastro: ${error.message}`);
@@ -120,6 +147,21 @@ export default function ResidentsView({ readOnly = false, onToast }) {
     }
   }
 
+  function handleOpenCreate() {
+    setEditingResident(null);
+    setOpen(true);
+  }
+
+  function handleOpenEdit(resident) {
+    setEditingResident(resident);
+    setOpen(true);
+  }
+
+  function handleCloseModal() {
+    setOpen(false);
+    setEditingResident(null);
+  }
+
   return (
     <div className="page-stack">
       <div className="panel-header">
@@ -130,7 +172,7 @@ export default function ResidentsView({ readOnly = false, onToast }) {
         </div>
         {!readOnly ? (
           <div className="panel-actions">
-            <button className="btn primary" onClick={() => setOpen(true)} type="button">Cadastrar placa e morador</button>
+            <button className="btn primary" onClick={handleOpenCreate} type="button">Cadastrar placa e morador</button>
           </div>
         ) : null}
       </div>
@@ -138,12 +180,12 @@ export default function ResidentsView({ readOnly = false, onToast }) {
       <div className="card">
         <div className="card-head">{readOnly ? "Cadastro de Clientes (Leitura)" : "Clientes Cadastrados"}</div>
         <div className="card-body table-wrap">
-          {loading ? <div className="empty">Carregando...</div> : <ResidentsTable residents={residents} readOnly={readOnly} onDelete={handleDelete} />}
+          {loading ? <div className="empty">Carregando...</div> : <ResidentsTable residents={residents} readOnly={readOnly} onDelete={handleDelete} onEdit={handleOpenEdit} />}
         </div>
       </div>
 
-      <Modal open={open} title="Novo Cliente / Veiculo" onClose={() => setOpen(false)}>
-        <ResidentForm onSubmit={handleSave} onClose={() => setOpen(false)} loading={saving} />
+      <Modal open={open} title={editingResident ? "Editar Cliente / Veiculo" : "Novo Cliente / Veiculo"} onClose={handleCloseModal}>
+        <ResidentForm initialData={editingResident} onSubmit={handleSave} onClose={handleCloseModal} loading={saving} />
       </Modal>
     </div>
   );

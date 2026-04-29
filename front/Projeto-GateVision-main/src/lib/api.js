@@ -1,5 +1,5 @@
 import { db, ESTAB_ID } from "./config";
-import { getFilterDateISO, logStatus } from "./utils";
+import { formatDateTime, getFilterDateISO, logStatus } from "./utils";
 
 export async function loginUser(login, password) {
   const { data, error } = await db
@@ -71,6 +71,7 @@ export async function fetchResidents() {
       cpf: person.cpf,
       apartamento: unidade?.identificacao || "-",
       torre: bloco?.nome || "-",
+      veiculo_id: vehicle?.id || null,
       placa: vehicle?.placa || "-",
       veiculo: vehicle?.modelo || "-"
     };
@@ -153,6 +154,90 @@ export async function deleteResident(personId) {
   if (personRes.error) throw personRes.error;
 }
 
+export async function updateResident(personId, payload) {
+  const [cpfRes, placaRes, currentVehicleRes, currentVinculoRes] = await Promise.all([
+    db.from("pessoas").select("id").eq("cpf", payload.cpf).neq("id", personId).maybeSingle(),
+    db.from("veiculos").select("id, pessoa_id").eq("placa", payload.placa).neq("pessoa_id", personId).maybeSingle(),
+    db.from("veiculos").select("id").eq("pessoa_id", personId).maybeSingle(),
+    db.from("vinculos").select("id").eq("pessoa_id", personId).maybeSingle()
+  ]);
+
+  if (cpfRes.error) throw cpfRes.error;
+  if (placaRes.error) throw placaRes.error;
+  if (currentVehicleRes.error) throw currentVehicleRes.error;
+  if (currentVinculoRes.error) throw currentVinculoRes.error;
+  if (cpfRes.data) throw new Error("CPF ja cadastrado.");
+  if (placaRes.data) throw new Error("Placa ja cadastrada.");
+
+  let { data: bloco, error: blocoErr } = await db.from("blocos").select("id")
+    .ilike("nome", payload.torre)
+    .eq("estabelecimento_id", ESTAB_ID)
+    .maybeSingle();
+  if (blocoErr) throw blocoErr;
+
+  if (!bloco) {
+    const createdBlock = await db.from("blocos")
+      .insert({ nome: payload.torre, estabelecimento_id: ESTAB_ID })
+      .select("id")
+      .single();
+    if (createdBlock.error) throw createdBlock.error;
+    bloco = createdBlock.data;
+  }
+
+  let { data: unidade, error: unidadeErr } = await db.from("unidades").select("id")
+    .eq("identificacao", payload.apartamento)
+    .eq("bloco_id", bloco.id)
+    .maybeSingle();
+  if (unidadeErr) throw unidadeErr;
+
+  if (!unidade) {
+    const createdUnit = await db.from("unidades")
+      .insert({ identificacao: payload.apartamento, bloco_id: bloco.id })
+      .select("id")
+      .single();
+    if (createdUnit.error) throw createdUnit.error;
+    unidade = createdUnit.data;
+  }
+
+  const personRes = await db.from("pessoas")
+    .update({ nome: payload.nome, cpf: payload.cpf })
+    .eq("id", personId);
+  if (personRes.error) throw personRes.error;
+
+  if (currentVinculoRes.data?.id) {
+    const vinculoRes = await db.from("vinculos")
+      .update({ unidade_id: unidade.id, tipo_vinculo_id: 1 })
+      .eq("id", currentVinculoRes.data.id);
+    if (vinculoRes.error) throw vinculoRes.error;
+  } else {
+    const vinculoRes = await db.from("vinculos").insert({
+      pessoa_id: personId,
+      unidade_id: unidade.id,
+      tipo_vinculo_id: 1
+    });
+    if (vinculoRes.error) throw vinculoRes.error;
+  }
+
+  if (currentVehicleRes.data?.id) {
+    const vehicleRes = await db.from("veiculos")
+      .update({
+        placa: payload.placa,
+        modelo: payload.veiculo || null,
+        tipo_veiculo_id: 1
+      })
+      .eq("id", currentVehicleRes.data.id);
+    if (vehicleRes.error) throw vehicleRes.error;
+  } else {
+    const vehicleRes = await db.from("veiculos").insert({
+      placa: payload.placa,
+      modelo: payload.veiculo || null,
+      pessoa_id: personId,
+      tipo_veiculo_id: 1
+    });
+    if (vehicleRes.error) throw vehicleRes.error;
+  }
+}
+
 export async function fetchLogs() {
   const { data, error } = await db.from("vw_ultimos_acessos").select("*").limit(200);
   if (error) throw error;
@@ -160,6 +245,8 @@ export async function fetchLogs() {
 }
 
 export async function lookupAuthorizedPlate(plate) {
+  const nowIso = new Date().toISOString();
+
   const { data, error } = await db
     .from("vw_placas_autorizadas")
     .select("*")
@@ -167,20 +254,45 @@ export async function lookupAuthorizedPlate(plate) {
     .maybeSingle();
 
   if (error) throw error;
-  if (!data) {
-    return { placa: plate, status: "nao-cadastrado", morador: null };
+  if (data) {
+    return {
+      placa: plate,
+      status: "autorizado",
+      morador: {
+        nome: data.proprietario || "Morador",
+        cpf: "",
+        apartamento: data.unidade || "-",
+        torre: data.bloco || "-"
+      }
+    };
   }
 
-  return {
-    placa: plate,
-    status: "autorizado",
-    morador: {
-      nome: data.proprietario || "Morador",
-      cpf: "",
-      apartamento: data.unidade || "-",
-      torre: data.bloco || "-"
-    }
-  };
+  const { data: temporaryAuthorization, error: temporaryError } = await db
+    .from("autorizacoes_temporarias")
+    .select("placa, nome_autorizado, data_inicio, data_fim")
+    .eq("placa", plate)
+    .eq("estabelecimento_id", ESTAB_ID)
+    .eq("ativo", true)
+    .lte("data_inicio", nowIso)
+    .gte("data_fim", nowIso)
+    .order("data_fim", { ascending: true })
+    .maybeSingle();
+
+  if (temporaryError) throw temporaryError;
+  if (temporaryAuthorization) {
+    return {
+      placa: plate,
+      status: "autorizado",
+      morador: {
+        nome: temporaryAuthorization.nome_autorizado || "Visitante autorizado",
+        cpf: "",
+        apartamento: "Temporario",
+        torre: formatDateTime(temporaryAuthorization.data_fim)
+      }
+    };
+  }
+
+  return { placa: plate, status: "nao-cadastrado", morador: null };
 }
 
 export async function detectPlateFromBackend(backendUrl, file) {
@@ -220,7 +332,7 @@ export async function registerAccessDenied(plate) {
 export async function fetchCameras() {
   const { data, error } = await db
     .from("cameras")
-    .select("id, nome, localizacao, tipos_camera(descricao)")
+    .select("id, nome, localizacao, tipo_camera_id, tipos_camera(descricao)")
     .eq("estabelecimento_id", ESTAB_ID)
     .eq("ativo", true);
   if (error) throw error;
@@ -229,6 +341,7 @@ export async function fetchCameras() {
     id: camera.id,
     nome: camera.nome,
     localizacao: camera.localizacao || "-",
+    tipo_camera_id: String(camera.tipo_camera_id || 1),
     tipo: camera.tipos_camera?.descricao || "-"
   }));
 }
@@ -245,6 +358,15 @@ export async function saveCamera(payload) {
 
 export async function deleteCamera(cameraId) {
   const { error } = await db.from("cameras").update({ ativo: false }).eq("id", cameraId);
+  if (error) throw error;
+}
+
+export async function updateCamera(cameraId, payload) {
+  const { error } = await db.from("cameras").update({
+    nome: payload.nome,
+    localizacao: payload.localizacao,
+    tipo_camera_id: Number.parseInt(payload.tipo_camera_id, 10)
+  }).eq("id", cameraId);
   if (error) throw error;
 }
 
@@ -269,6 +391,17 @@ export async function saveAuthorization(payload) {
     data_fim: payload.data_fim,
     estabelecimento_id: ESTAB_ID
   });
+  if (error) throw error;
+}
+
+export async function updateAuthorization(authorizationId, payload) {
+  const { error } = await db.from("autorizacoes_temporarias").update({
+    placa: payload.placa,
+    nome_autorizado: payload.nome_autorizado,
+    motivo: payload.motivo || null,
+    data_inicio: payload.data_inicio,
+    data_fim: payload.data_fim
+  }).eq("id", authorizationId);
   if (error) throw error;
 }
 
