@@ -1,0 +1,280 @@
+import { db, ESTAB_ID } from "./config";
+import { getFilterDateISO, logStatus } from "./utils";
+
+export async function loginUser(login, password) {
+  const { data, error } = await db
+    .from("usuarios_sistema")
+    .select("*, pessoas(nome), perfis_acesso(descricao)")
+    .eq("login", login)
+    .eq("senha_hash", password)
+    .eq("ativo", true)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return null;
+
+  return {
+    id: data.id,
+    username: data.login,
+    nome: data.pessoas?.nome || data.login,
+    role: data.perfis_acesso?.descricao || "porteiro"
+  };
+}
+
+export async function fetchDashboardData(filterDays) {
+  const minDate = getFilterDateISO(filterDays);
+  let logsQuery = db.from("vw_ultimos_acessos").select("*");
+  if (minDate) logsQuery = logsQuery.gte("registrado_em", minDate);
+
+  const [logsRes, countRes] = await Promise.all([
+    logsQuery,
+    db.from("pessoas").select("*", { count: "exact", head: true })
+  ]);
+
+  if (logsRes.error) throw logsRes.error;
+  if (countRes.error) throw countRes.error;
+
+  const logs = logsRes.data || [];
+  const totalClientes = countRes.count || 0;
+  const liberados = logs.filter((item) => logStatus(item).ok).length;
+  const negados = logs.filter((item) => !logStatus(item).ok).length;
+
+  return {
+    logs,
+    totalClientes,
+    liberados,
+    negados,
+    total: liberados + negados,
+    latest: logs.slice(0, 5)
+  };
+}
+
+export async function fetchResidents() {
+  const [pessoasRes, veiculosRes, vinculosRes] = await Promise.all([
+    db.from("pessoas").select("id, nome, cpf"),
+    db.from("veiculos").select("id, placa, modelo, pessoa_id"),
+    db.from("vinculos").select("pessoa_id, unidades(identificacao, blocos(nome))")
+  ]);
+
+  if (pessoasRes.error) throw pessoasRes.error;
+  if (veiculosRes.error) throw veiculosRes.error;
+  if (vinculosRes.error) throw vinculosRes.error;
+
+  return (pessoasRes.data || []).map((person) => {
+    const vehicle = (veiculosRes.data || []).find((item) => item.pessoa_id === person.id);
+    const vinculo = (vinculosRes.data || []).find((item) => item.pessoa_id === person.id);
+    const unidade = vinculo?.unidades;
+    const bloco = unidade?.blocos;
+    return {
+      id: person.id,
+      nome: person.nome,
+      cpf: person.cpf,
+      apartamento: unidade?.identificacao || "-",
+      torre: bloco?.nome || "-",
+      placa: vehicle?.placa || "-",
+      veiculo: vehicle?.modelo || "-"
+    };
+  });
+}
+
+export async function saveResident(payload) {
+  const [cpfRes, placaRes] = await Promise.all([
+    db.from("pessoas").select("id").eq("cpf", payload.cpf).maybeSingle(),
+    db.from("veiculos").select("id").eq("placa", payload.placa).maybeSingle()
+  ]);
+
+  if (cpfRes.error) throw cpfRes.error;
+  if (placaRes.error) throw placaRes.error;
+  if (cpfRes.data) throw new Error("CPF ja cadastrado.");
+  if (placaRes.data) throw new Error("Placa ja cadastrada.");
+
+  let { data: bloco, error: blocoErr } = await db.from("blocos").select("id")
+    .ilike("nome", payload.torre)
+    .eq("estabelecimento_id", ESTAB_ID)
+    .maybeSingle();
+  if (blocoErr) throw blocoErr;
+
+  if (!bloco) {
+    const createdBlock = await db.from("blocos")
+      .insert({ nome: payload.torre, estabelecimento_id: ESTAB_ID })
+      .select("id")
+      .single();
+    if (createdBlock.error) throw createdBlock.error;
+    bloco = createdBlock.data;
+  }
+
+  let { data: unidade, error: unidadeErr } = await db.from("unidades").select("id")
+    .eq("identificacao", payload.apartamento)
+    .eq("bloco_id", bloco.id)
+    .maybeSingle();
+  if (unidadeErr) throw unidadeErr;
+
+  if (!unidade) {
+    const createdUnit = await db.from("unidades")
+      .insert({ identificacao: payload.apartamento, bloco_id: bloco.id })
+      .select("id")
+      .single();
+    if (createdUnit.error) throw createdUnit.error;
+    unidade = createdUnit.data;
+  }
+
+  const personRes = await db.from("pessoas")
+    .insert({ nome: payload.nome, cpf: payload.cpf })
+    .select("id")
+    .single();
+  if (personRes.error) throw personRes.error;
+
+  const personId = personRes.data.id;
+  const vinculoRes = await db.from("vinculos").insert({
+    pessoa_id: personId,
+    unidade_id: unidade.id,
+    tipo_vinculo_id: 1
+  });
+  if (vinculoRes.error) throw vinculoRes.error;
+
+  const vehicleRes = await db.from("veiculos").insert({
+    placa: payload.placa,
+    modelo: payload.veiculo || null,
+    pessoa_id: personId,
+    tipo_veiculo_id: 1
+  });
+  if (vehicleRes.error) throw vehicleRes.error;
+}
+
+export async function deleteResident(personId) {
+  const [vinculoRes, vehicleRes] = await Promise.all([
+    db.from("vinculos").delete().eq("pessoa_id", personId),
+    db.from("veiculos").delete().eq("pessoa_id", personId)
+  ]);
+  if (vinculoRes.error) throw vinculoRes.error;
+  if (vehicleRes.error) throw vehicleRes.error;
+
+  const personRes = await db.from("pessoas").delete().eq("id", personId);
+  if (personRes.error) throw personRes.error;
+}
+
+export async function fetchLogs() {
+  const { data, error } = await db.from("vw_ultimos_acessos").select("*").limit(200);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function lookupAuthorizedPlate(plate) {
+  const { data, error } = await db
+    .from("vw_placas_autorizadas")
+    .select("*")
+    .eq("placa", plate)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) {
+    return { placa: plate, status: "nao-cadastrado", morador: null };
+  }
+
+  return {
+    placa: plate,
+    status: "autorizado",
+    morador: {
+      nome: data.proprietario || "Morador",
+      cpf: "",
+      apartamento: data.unidade || "-",
+      torre: data.bloco || "-"
+    }
+  };
+}
+
+export async function detectPlateFromBackend(backendUrl, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${backendUrl}/api/detect`, { method: "POST", body: formData });
+  if (!response.ok) throw new Error(`Servidor retornou ${response.status}`);
+  return response.json();
+}
+
+export async function registerAccessOpen(plate) {
+  const { error } = await db.rpc("registrar_acesso", {
+    p_placa: plate,
+    p_camera_id: 1,
+    p_confianca: 100,
+    p_imagem_url: null,
+    p_tempo_ms: null
+  });
+  if (error) throw error;
+}
+
+export async function triggerGate(backendUrl) {
+  await fetch(`${backendUrl}/api/open-gate`, { method: "POST" });
+}
+
+export async function registerAccessDenied(plate) {
+  const { error } = await db.from("acessos").insert({
+    placa_detectada: plate,
+    camera_id: 1,
+    autorizado: false,
+    motivo_bloqueio: "Negado pelo porteiro",
+    confianca: 100
+  });
+  if (error) throw error;
+}
+
+export async function fetchCameras() {
+  const { data, error } = await db
+    .from("cameras")
+    .select("id, nome, localizacao, tipos_camera(descricao)")
+    .eq("estabelecimento_id", ESTAB_ID)
+    .eq("ativo", true);
+  if (error) throw error;
+
+  return (data || []).map((camera) => ({
+    id: camera.id,
+    nome: camera.nome,
+    localizacao: camera.localizacao || "-",
+    tipo: camera.tipos_camera?.descricao || "-"
+  }));
+}
+
+export async function saveCamera(payload) {
+  const { error } = await db.from("cameras").insert({
+    nome: payload.nome,
+    localizacao: payload.localizacao,
+    tipo_camera_id: Number.parseInt(payload.tipo_camera_id, 10),
+    estabelecimento_id: ESTAB_ID
+  });
+  if (error) throw error;
+}
+
+export async function deleteCamera(cameraId) {
+  const { error } = await db.from("cameras").update({ ativo: false }).eq("id", cameraId);
+  if (error) throw error;
+}
+
+export async function fetchAuthorizations() {
+  const { data, error } = await db
+    .from("autorizacoes_temporarias")
+    .select("id, placa, nome_autorizado, motivo, data_inicio, data_fim")
+    .eq("estabelecimento_id", ESTAB_ID)
+    .eq("ativo", true)
+    .gte("data_fim", new Date().toISOString())
+    .order("data_fim", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function saveAuthorization(payload) {
+  const { error } = await db.from("autorizacoes_temporarias").insert({
+    placa: payload.placa,
+    nome_autorizado: payload.nome_autorizado,
+    motivo: payload.motivo || null,
+    data_inicio: payload.data_inicio,
+    data_fim: payload.data_fim,
+    estabelecimento_id: ESTAB_ID
+  });
+  if (error) throw error;
+}
+
+export async function deleteAuthorization(authorizationId) {
+  const { error } = await db.from("autorizacoes_temporarias")
+    .update({ ativo: false })
+    .eq("id", authorizationId);
+  if (error) throw error;
+}

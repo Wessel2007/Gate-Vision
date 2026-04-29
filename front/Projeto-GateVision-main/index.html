@@ -5,83 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>VisionGate - Controle de Portaria</title>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <section id="loginScreen" class="login-shell">
-    <div class="login-card">
-      <div>
-        <div class="eyebrow">Controle inteligente de acesso</div>
-        <h1 class="logo-title">Vision<em>Gate</em></h1>
-        <p class="login-sub">Sistema de acesso por leitura de placa</p>
-      </div>
-      <div id="loginError" class="error hidden"></div>
-      <div>
-        <label for="loginUsuario" class="login-sub">Usuario</label>
-        <input id="loginUsuario" class="input" placeholder="Digite o usuario">
-      </div>
-      <div>
-        <label for="loginSenha" class="login-sub">Senha</label>
-        <input id="loginSenha" type="password" class="input" placeholder="Digite a senha">
-      </div>
-      <button id="btnLogin" class="btn primary">Entrar</button>
-    </div>
-  </section>
-
-  <section id="appScreen" class="app hidden">
-    <aside class="side">
-      <div class="brand">
-        <svg viewBox="0 0 195 52" xmlns="http://www.w3.org/2000/svg">
-          <g transform="translate(0, 2)">
-            <path d="M24 4 C12 4, 4 13, 4 24 C4 35, 12 44, 24 44" stroke="#1a7a1a" stroke-width="4.5" fill="none" stroke-linecap="round"/>
-            <path d="M24 9 C15 9, 9 16, 9 24 C9 32, 15 39, 24 39" stroke="#e6a800" stroke-width="4" fill="none" stroke-linecap="round"/>
-            <circle cx="24" cy="24" r="9" fill="#1a3a8a"/>
-            <circle cx="24" cy="24" r="4" fill="#2a5ce6"/>
-            <circle cx="21.5" cy="21.5" r="2" fill="white" opacity="0.5"/>
-            <polygon points="33,24 46,18 46,30" fill="#e6a800" opacity="0.9"/>
-          </g>
-          <text x="58" y="34" font-size="22" font-family="Arial, sans-serif" font-weight="800" letter-spacing="-0.5">
-            <tspan fill="#1a7a1a">Vision</tspan><tspan fill="#1a2a5e">Gate</tspan>
-          </text>
-        </svg>
-        <p class="brand-copy">Painel operacional para leitura de placas, autorização de entrada e histórico de acessos em tempo real.</p>
-      </div>
-      <div id="navMenu" class="nav"></div>
-      <div class="user-box">
-        <div class="user-name" id="userName">-</div>
-        <div class="user-role" id="userRole">-</div>
-        <button id="btnLogout" class="btn">Sair</button>
-      </div>
-    </aside>
-    <main class="main">
-      <header class="top">
-        <div class="top-title">
-          <strong id="viewTitle">Painel</strong>
-          <span>Operação central da portaria</span>
-        </div>
-        <div class="top-actions">
-          <div class="chip ok">Sistema ativo</div>
-          <div id="backendChip" class="chip" style="cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="Clique para alterar o backend"></div>
-        </div>
-      </header>
-      <div id="viewContainer" class="content"></div>
-    </main>
-  </section>
-
-  <div id="appModal" class="modal-shell hidden">
-    <div class="modal-backdrop" data-close-modal></div>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
-      <div class="modal-head">
-        <strong id="appModalTitle">Formulario</strong>
-        <button class="btn" type="button" data-close-modal>Fechar</button>
-      </div>
-      <div id="appModalBody" class="modal-body"></div>
-    </div>
-  </div>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./config.js" onerror="void(0)"></script>
-  <script src="./app.js"></script>
+  <script src="/config.js" onerror="void(0)"></script>
+  <div id="root"></div>
+  <script type="module" src="./src/main.jsx"></script>
 </body>
 </html>

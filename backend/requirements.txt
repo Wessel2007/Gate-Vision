@@ -7,5 +7,4 @@ opencv-python
 numpy
 torch
 easyocr
-supabase
 pyserial

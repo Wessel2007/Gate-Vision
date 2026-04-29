@@ -10,10 +10,14 @@ if not exist ".venv\Scripts\activate.bat" (
     echo Criando ambiente virtual...
     python -m venv .venv
     call .venv\Scripts\activate.bat
-    echo Instalando dependencias...
-    pip install -r requirements.txt
 ) else (
     call .venv\Scripts\activate.bat
+)
+
+python -c "import dotenv" >nul 2>&1
+if errorlevel 1 (
+    echo Instalando dependencias...
+    python -m pip install -r requirements.txt
 )
 
 echo.
