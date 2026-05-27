@@ -31,7 +31,6 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   const [detection, setDetection] = useState(null);
   const [decision, setDecision] = useState(null);
   const [manualPlate, setManualPlate] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("");
   const [webcamActive, setWebcamActive] = useState(false);
   const [processingLabel, setProcessingLabel] = useState("");
   const [cameraDevices, setCameraDevices] = useState([]);
@@ -80,8 +79,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   useEffect(() => () => {
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
     stopWebcam();
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-  }, [previewUrl]);
+  }, []);
 
   async function loadCameraDevices(preferredId = null) {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
@@ -124,12 +122,9 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   }
 
   function clearMonitorState() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setDetection(null);
     setDecision(null);
     setManualPlate("");
-    setPreviewUrl("");
-    // FIX 3: use streamRef (always current) instead of webcamActive state (stale closure)
     setProcessingLabel(streamRef.current ? "Aguardando nova placa..." : "");
     resetProcessedPlate();
     resetStabilityTracking();
@@ -343,7 +338,6 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = stream;
       setWebcamActive(true);
-      setPreviewUrl("");
       setProcessingLabel("Aguardando a placa e a câmera estabilizarem...");
       resetStabilityTracking();
       if (activeCameraId) setSelectedCameraId(activeCameraId);
@@ -432,16 +426,6 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
     await processPlate(clean, true);
   }
 
-  async function handleFileChange(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    // FIX 6: reset input so the same file can be selected again
-    event.target.value = "";
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl(URL.createObjectURL(file));
-    await processImage(file, false);
-  }
-
   async function handleCameraChange(event) {
     const nextCameraId = event.target.value;
     setSelectedCameraId(nextCameraId);
@@ -473,11 +457,6 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
           <div className="card-head">Captura e leitura</div>
           <div className="card-body">
             <div className="camera">
-              {previewUrl && !webcamActive ? (
-                <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
-                  <img src={previewUrl} style={{ width: "100%", height: "100%", objectFit: "contain" }} alt="Preview" />
-                </div>
-              ) : null}
               <video
                 ref={videoRef}
                 className="webcam-video"
@@ -486,8 +465,8 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
                 playsInline
                 muted
               />
-              {!previewUrl && !webcamActive ? (
-                <div>Envie uma foto, use a webcam<br />ou digite a placa manualmente</div>
+              {!webcamActive ? (
+                <div>Use a webcam ou digite a placa manualmente</div>
               ) : null}
             </div>
 
@@ -499,10 +478,6 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
                 placeholder="Ex: BRA2E24"
                 maxLength={7}
               />
-              <label className="btn" style={{ cursor: "pointer" }}>
-                Enviar foto
-                <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleFileChange} />
-              </label>
             </div>
 
             <div className="monitor-toolbar" style={{ marginTop: 10 }}>
