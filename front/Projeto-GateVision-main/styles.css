@@ -748,7 +748,7 @@ html[data-theme="light"] .card-head {
 }
 
 .camera {
-  height: 300px;
+  height: 180px;
   border: 1px dashed rgba(241, 198, 68, 0.28);
   border-radius: 18px;
   background:
@@ -1103,7 +1103,7 @@ html[data-theme="light"] .modal-card {
   .login-card { padding: 22px; border-radius: 22px; }
   .logo-title { font-size: 34px; }
   .section-title { font-size: 22px; }
-  .camera { height: 240px; }
+  .camera { height: 150px; }
   .row { grid-template-columns: 1fr; }
   .top-title strong { font-size: 20px; }
   .hero-note strong,
@@ -1197,12 +1197,12 @@ html[data-theme="light"] .modal-card {
 
 /* Compact camera height inside panels */
 .camera-panel .camera {
-  height: 220px;
+  height: 160px;
 }
 
 /* Single-panel keeps the original taller view */
 .multi-monitor-grid[data-count="1"] .camera-panel .camera {
-  height: 300px;
+  height: 180px;
 }
 
 .monitor-add-form {
