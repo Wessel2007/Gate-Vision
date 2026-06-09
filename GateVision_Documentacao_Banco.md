@@ -1,5 +1,5 @@
 # GateVision — Documentação Técnica do Banco de Dados
-
+s
 > Sistema de Controle de Acesso por Reconhecimento de Placas (ALPR)  
 > **PostgreSQL 17 | Supabase | PL/pgSQL**
 
