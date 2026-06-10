@@ -52,7 +52,10 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   // FIX 5: prevent concurrent startWebcam calls (auto-start + button click race)
   const startingWebcamRef = useRef(false);
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     if (videoRef.current && streamRef.current) {
@@ -77,6 +80,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   }, [cameraDevices.length, selectedCameraId, webcamActive]);
 
   useEffect(() => () => {
+    autoStartAttemptedRef.current = false;
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
     stopWebcam();
   }, []);
@@ -429,8 +433,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   async function handleCameraChange(event) {
     const nextCameraId = event.target.value;
     setSelectedCameraId(nextCameraId);
-    if (!webcamActive) return;
-    stopWebcam();
+    if (webcamActive) stopWebcam();
     await startWebcam(nextCameraId);
   }
 
