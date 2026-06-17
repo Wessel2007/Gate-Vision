@@ -33,6 +33,74 @@ function mapGatekeeper(row) {
   };
 }
 
+function uniqueNonEmpty(values) {
+  return [...new Set(values.filter((value) => value !== null && value !== undefined && value !== ""))];
+}
+
+function normalizeAccessLog(row, lookups = {}) {
+  const vehicle = row.veiculos || null;
+  const camera = row.cameras || null;
+  const person = vehicle?.pessoas || null;
+  const lookupVehicle = lookups.vehiclesById?.[row.veiculo_id] || null;
+  const lookupPerson = lookupVehicle ? lookups.peopleById?.[lookupVehicle.pessoa_id] : null;
+
+  return {
+    id: row.id,
+    placa_detectada: row.placa_detectada || row.placa || "-",
+    autorizado: row.autorizado,
+    motivo_bloqueio: row.motivo_bloqueio || row.motivo || null,
+    motivo: row.motivo || row.motivo_bloqueio || null,
+    confianca: row.confianca ?? null,
+    imagem_url: row.imagem_url || null,
+    tempo_processamento_ms: row.tempo_processamento_ms ?? row.tempo_ms ?? null,
+    registrado_em: row.registrado_em || row.created_at || null,
+    proprietario: row.proprietario || person?.nome || lookupPerson?.nome || null,
+    camera: row.camera || camera?.nome || lookups.camerasById?.[row.camera_id]?.nome || null
+  };
+}
+
+async function fetchLogsFromAccessTable() {
+  const { data, error } = await db
+    .from("acessos")
+    .select("*")
+    .order("registrado_em", { ascending: false })
+    .limit(200);
+
+  if (error) throw error;
+
+  const rows = data || [];
+  const cameraIds = uniqueNonEmpty(rows.map((row) => row.camera_id));
+  const vehicleIds = uniqueNonEmpty(rows.map((row) => row.veiculo_id));
+
+  const [camerasRes, vehiclesRes] = await Promise.all([
+    cameraIds.length
+      ? db.from("cameras").select("id, nome").in("id", cameraIds)
+      : Promise.resolve({ data: [], error: null }),
+    vehicleIds.length
+      ? db.from("veiculos").select("id, pessoa_id").in("id", vehicleIds)
+      : Promise.resolve({ data: [], error: null })
+  ]);
+
+  if (camerasRes.error) throw camerasRes.error;
+  if (vehiclesRes.error) throw vehiclesRes.error;
+
+  const vehicles = vehiclesRes.data || [];
+  const personIds = uniqueNonEmpty(vehicles.map((vehicle) => vehicle.pessoa_id));
+  const peopleRes = personIds.length
+    ? await db.from("pessoas").select("id, nome").in("id", personIds)
+    : { data: [], error: null };
+
+  if (peopleRes.error) throw peopleRes.error;
+
+  const lookups = {
+    camerasById: Object.fromEntries((camerasRes.data || []).map((camera) => [camera.id, camera])),
+    vehiclesById: Object.fromEntries(vehicles.map((vehicle) => [vehicle.id, vehicle])),
+    peopleById: Object.fromEntries((peopleRes.data || []).map((person) => [person.id, person]))
+  };
+
+  return rows.map((row) => normalizeAccessLog(row, lookups));
+}
+
 async function fetchGatekeeperProfileId() {
   const { data, error } = await db
     .from("perfis_acesso")
@@ -194,10 +262,17 @@ export async function fetchDashboardData(filterDays) {
     db.from("pessoas").select("*", { count: "exact", head: true })
   ]);
 
-  if (logsRes.error) throw logsRes.error;
   if (countRes.error) throw countRes.error;
 
-  const logs = logsRes.data || [];
+  let logs = [];
+  if (logsRes.error) {
+    console.warn("Falha ao carregar vw_ultimos_acessos no dashboard, usando tabela acessos:", logsRes.error);
+    logs = await fetchLogsFromAccessTable();
+    if (minDate) logs = logs.filter((item) => item.registrado_em && item.registrado_em >= minDate);
+  } else {
+    logs = (logsRes.data || []).map((row) => normalizeAccessLog(row));
+  }
+
   const totalClientes = countRes.count || 0;
   const liberados = logs.filter((item) => logStatus(item).ok).length;
   const negados = logs.filter((item) => !logStatus(item).ok).length;
@@ -406,9 +481,15 @@ export async function updateResident(personId, payload) {
 }
 
 export async function fetchLogs() {
-  const { data, error } = await db.from("vw_ultimos_acessos").select("*").limit(200);
-  if (error) throw error;
-  return data || [];
+  const { data, error } = await db
+    .from("vw_ultimos_acessos")
+    .select("*")
+    .order("registrado_em", { ascending: false })
+    .limit(200);
+
+  if (!error) return (data || []).map((row) => normalizeAccessLog(row));
+  console.warn("Falha ao carregar vw_ultimos_acessos, usando tabela acessos:", error);
+  return fetchLogsFromAccessTable();
 }
 
 export async function lookupAuthorizedPlate(plate) {

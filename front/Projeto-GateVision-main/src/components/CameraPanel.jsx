@@ -11,6 +11,9 @@ import { buildStatusIllustration, formatCPF, onlyPlate } from "../lib/utils";
 const VOTE_WINDOW = 4;
 const CONFIRM_VOTES = 1;
 const OCR_MIN_CONF = 0.72;
+const AUTO_READY_DELAY_MS = 3000;
+const DUPLICATE_SCAN_DELAY_MS = 3000;
+const CLEAR_APPROVED_PLATE_FRAMES = 3;
 
 function statusChip(detection, decision) {
   if (!detection) return <span className="chip warn">Aguardando identificação</span>;
@@ -42,9 +45,12 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   const detectInFlightRef = useRef(false);
   const ocrInFlightRef = useRef(false);
   const lastProcessedPlateRef = useRef(null);
+  const ignoredApprovedPlateRef = useRef(null);
+  const framesWithoutPlateRef = useRef(0);
   const lastFrameSampleRef = useRef(null);
   const stableFrameCountRef = useRef(0);
   const resetTimerRef = useRef(null);
+  const duplicateScanTimerRef = useRef(null);
   const plateVoteBufferRef = useRef([]);
   const autoStartAttemptedRef = useRef(false);
   // FIX 1: guard against setState after unmount (panel removal)
@@ -82,6 +88,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   useEffect(() => () => {
     autoStartAttemptedRef.current = false;
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    if (duplicateScanTimerRef.current) clearTimeout(duplicateScanTimerRef.current);
     stopWebcam();
   }, []);
 
@@ -110,6 +117,19 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
     lastProcessedPlateRef.current = null;
   }
 
+  function resetApprovedPlateIgnore() {
+    ignoredApprovedPlateRef.current = null;
+    framesWithoutPlateRef.current = 0;
+  }
+
+  function scheduleDuplicateScanReset() {
+    if (duplicateScanTimerRef.current) clearTimeout(duplicateScanTimerRef.current);
+    duplicateScanTimerRef.current = window.setTimeout(() => {
+      resetProcessedPlate();
+      duplicateScanTimerRef.current = null;
+    }, DUPLICATE_SCAN_DELAY_MS);
+  }
+
   function resetVoteBuffer() {
     plateVoteBufferRef.current = [];
   }
@@ -135,7 +155,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
     resetVoteBuffer();
   }
 
-  function scheduleMonitorReset() {
+  function scheduleMonitorReset(delayMs = 20000) {
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
     resetTimerRef.current = window.setTimeout(() => {
       if (!mountedRef.current) return; // FIX 1
@@ -192,12 +212,24 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
     return stableFrameCountRef.current >= 1;
   }
 
+  function reconnectWebcam(cameraId = selectedCameraId) {
+    if (!mountedRef.current) return;
+    stopWebcam();
+    autoStartAttemptedRef.current = false;
+    setProcessingLabel("Reconectando cÃ¢mera...");
+    window.setTimeout(() => {
+      if (!mountedRef.current || streamRef.current || startingWebcamRef.current) return;
+      autoStartAttemptedRef.current = true;
+      void startWebcam(cameraId);
+    }, 500);
+  }
+
   async function openGate(detected, autoTriggered = false, ocrConf = null) {
     if (!detected) return;
     await registerAccessOpen(detected.placa, ocrConf);
     if (!mountedRef.current) return; // FIX 1
     setDecision("liberado");
-    scheduleMonitorReset();
+    scheduleMonitorReset(AUTO_READY_DELAY_MS);
     onToast(
       autoTriggered ? "Placa autorizada. Portão aberto automaticamente." : "Portão aberto pelo porteiro.",
       "ok"
@@ -226,6 +258,8 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       if (!mountedRef.current) return; // FIX 1
       setDetection(nextDetection);
       if (autoOpen && nextDetection.status === "autorizado") {
+        ignoredApprovedPlateRef.current = clean;
+        framesWithoutPlateRef.current = 0;
         await openGate(nextDetection, true, ocrConf);
       }
     } catch (error) {
@@ -234,6 +268,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       onToast(`Erro ao verificar placa: ${error.message}`);
     } finally {
       detectInFlightRef.current = false;
+      scheduleDuplicateScanReset();
       if (mountedRef.current) setProcessingLabel(""); // FIX 1
     }
   }
@@ -251,6 +286,12 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       const result = await detectPlateFromBackend(backendUrl, file);
 
       if (!result.placa) {
+        if (fromWebcam && ignoredApprovedPlateRef.current) {
+          framesWithoutPlateRef.current += 1;
+          if (framesWithoutPlateRef.current >= CLEAR_APPROVED_PLATE_FRAMES) {
+            resetApprovedPlateIgnore();
+          }
+        }
         if (!fromWebcam && mountedRef.current) {
           setDetection({ placa: "---", status: "nao-detectado", morador: null });
           onToast("Nenhuma placa detectada na imagem.");
@@ -262,6 +303,14 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       const ocrConf = result.confianca_ocr ?? 0;
 
       if (fromWebcam) {
+        if (ignoredApprovedPlateRef.current && clean === ignoredApprovedPlateRef.current) {
+          framesWithoutPlateRef.current = 0;
+          if (mountedRef.current && !detection) setProcessingLabel("Aguardando prÃ³xima placa...");
+          return;
+        }
+        if (ignoredApprovedPlateRef.current && clean !== ignoredApprovedPlateRef.current) {
+          resetApprovedPlateIgnore();
+        }
         if (ocrConf > 0 && ocrConf < OCR_MIN_CONF) {
           if (mountedRef.current) setProcessingLabel("Aguardando leitura mais clara...");
           return;
@@ -338,6 +387,9 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
 
       const activeTrack = stream.getVideoTracks()[0];
       const activeCameraId = activeTrack?.getSettings?.().deviceId || cameraId || "";
+      stream.getVideoTracks().forEach((track) => {
+        track.onended = () => reconnectWebcam(activeCameraId || selectedCameraId);
+      });
 
       if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = stream;
@@ -433,7 +485,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   async function handleCameraChange(event) {
     const nextCameraId = event.target.value;
     setSelectedCameraId(nextCameraId);
-    if (webcamActive) stopWebcam();
+    if (streamRef.current) stopWebcam();
     await startWebcam(nextCameraId);
   }
 
@@ -497,11 +549,9 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
                   <option key={cam.id} value={cam.id}>{cam.label}</option>
                 ))}
               </select>
-              {webcamActive ? (
-                <button className="btn err" type="button" onClick={stopWebcam}>Parar</button>
-              ) : (
-                <button className="btn ok" type="button" onClick={() => startWebcam()}>Iniciar webcam</button>
-              )}
+              {!webcamActive ? (
+                <button className="btn ok" type="button" onClick={() => startWebcam()}>Reconectar webcam</button>
+              ) : null}
             </div>
 
             {processingLabel ? (

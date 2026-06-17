@@ -748,7 +748,8 @@ html[data-theme="light"] .card-head {
 }
 
 .camera {
-  height: 180px;
+  min-height: 120px;
+  aspect-ratio: 16 / 9;
   border: 1px dashed rgba(241, 198, 68, 0.28);
   border-radius: 18px;
   background:
@@ -761,6 +762,7 @@ html[data-theme="light"] .card-head {
   font-size: 13px;
   text-align: center;
   padding: 10px;
+  overflow: hidden;
 }
 
 html[data-theme="light"] .camera {
@@ -773,7 +775,8 @@ html[data-theme="light"] .camera {
 .webcam-video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  background: #050806;
   border-radius: 14px;
 }
 
@@ -1103,7 +1106,7 @@ html[data-theme="light"] .modal-card {
   .login-card { padding: 22px; border-radius: 22px; }
   .logo-title { font-size: 34px; }
   .section-title { font-size: 22px; }
-  .camera { height: 150px; }
+  .camera { min-height: 120px; }
   .row { grid-template-columns: 1fr; }
   .top-title strong { font-size: 20px; }
   .hero-note strong,
@@ -1195,14 +1198,34 @@ html[data-theme="light"] .modal-card {
   padding: 14px;
 }
 
+.multi-monitor-grid[data-count="1"] .camera-panel-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+  align-items: start;
+}
+
+.multi-monitor-grid[data-count="1"] .camera-panel-body > .card {
+  height: 100%;
+}
+
+.multi-monitor-grid[data-count="1"] .camera-panel-body > .card > .card-body {
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 50px);
+}
+
+.multi-monitor-grid[data-count="1"] .status-image-wrap {
+  height: 140px;
+}
+
 /* Compact camera height inside panels */
 .camera-panel .camera {
-  height: 160px;
+  min-height: 147px;
 }
 
 /* Single-panel keeps the original taller view */
 .multi-monitor-grid[data-count="1"] .camera-panel .camera {
-  height: 180px;
+  min-height: 213px;
 }
 
 .monitor-add-form {
@@ -1213,6 +1236,11 @@ html[data-theme="light"] .modal-card {
 }
 
 @media (max-width: 1080px) {
+  .multi-monitor-grid[data-count="1"] .camera-panel-body {
+    display: flex;
+    flex-direction: column;
+  }
+
   .multi-monitor-grid[data-count="2"],
   .multi-monitor-grid[data-count="3"],
   .multi-monitor-grid[data-count="4"] {
