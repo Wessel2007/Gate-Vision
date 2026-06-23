@@ -78,11 +78,33 @@ def enviar_arduino(comando: bytes) -> bool:
         return False
 
 
-def abrir_cancela(tempo_aberta: float | None = None):
+def abrir_cancela(tempo_aberta: float | None = None, porta: str | None = None, baud: int | None = None):
     if tempo_aberta is None:
         tempo_aberta = GATE_OPEN_SECONDS
 
     def acao():
+        if porta:
+            print(f"Autorizado -> abrindo portao na porta {porta}")
+            if serial is None:
+                print("Pacote pyserial nao instalado. Simulando abertura/fechamento.")
+                return
+            try:
+                with _arduino_lock:
+                    arduino = serial.Serial(porta, baud or 9600, timeout=1)
+                    time.sleep(2)
+                    arduino.reset_input_buffer()
+                    arduino.write(b"A")
+                    arduino.flush()
+                    time.sleep(tempo_aberta)
+                    arduino.write(b"F")
+                    arduino.flush()
+                    arduino.close()
+                print("Portao fechado")
+                return
+            except Exception as exc:
+                print(f"Arduino indisponivel na porta {porta}. Simulando abertura/fechamento: {exc}")
+                return
+
         print("Autorizado -> abrindo portao")
         if not enviar_arduino(b"A"):
             print("Arduino indisponivel. Simulando abertura/fechamento.")

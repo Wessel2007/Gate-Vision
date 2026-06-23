@@ -37,6 +37,24 @@ function uniqueNonEmpty(values) {
   return [...new Set(values.filter((value) => value !== null && value !== undefined && value !== ""))];
 }
 
+const CAMERA_GATE_PORTS_KEY = "gateVisionCameraGatePorts";
+
+function loadCameraGatePorts() {
+  try {
+    return JSON.parse(localStorage.getItem(CAMERA_GATE_PORTS_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveCameraGatePort(cameraId, portaUsb) {
+  if (!cameraId) return;
+  const ports = loadCameraGatePorts();
+  if (portaUsb) ports[cameraId] = portaUsb;
+  else delete ports[cameraId];
+  localStorage.setItem(CAMERA_GATE_PORTS_KEY, JSON.stringify(ports));
+}
+
 function normalizeAccessLog(row, lookups = {}) {
   const vehicle = row.veiculos || null;
   const camera = row.cameras || null;
@@ -551,11 +569,11 @@ export async function detectPlateFromBackend(backendUrl, file) {
   return response.json();
 }
 
-export async function registerAccessOpen(plate, confiancaOcr = null) {
+export async function registerAccessOpen(plate, confiancaOcr = null, cameraId = 1) {
   const confianca = confiancaOcr !== null ? Math.round(confiancaOcr * 100) : 100;
   const { error } = await db.rpc("registrar_acesso", {
     p_placa: plate,
-    p_camera_id: 1,
+    p_camera_id: cameraId || 1,
     p_confianca: confianca,
     p_imagem_url: null,
     p_tempo_ms: null
@@ -563,14 +581,25 @@ export async function registerAccessOpen(plate, confiancaOcr = null) {
   if (error) throw error;
 }
 
-export async function triggerGate(backendUrl) {
-  await fetch(`${backendUrl}/api/open-gate`, { method: "POST" });
+export async function triggerGate(backendUrl, portaUsb = "") {
+  await fetch(`${backendUrl}/api/open-gate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ porta_usb: portaUsb || null })
+  });
 }
 
-export async function registerAccessDenied(plate) {
+export async function fetchSerialPorts(backendUrl) {
+  const response = await fetch(`${backendUrl}/api/serial-ports`);
+  if (!response.ok) throw new Error(`Servidor retornou ${response.status}`);
+  const data = await response.json();
+  return data.ports || [];
+}
+
+export async function registerAccessDenied(plate, cameraId = 1) {
   const { error } = await db.from("acessos").insert({
     placa_detectada: plate,
-    camera_id: 1,
+    camera_id: cameraId || 1,
     autorizado: false,
     motivo_bloqueio: "Negado pelo porteiro",
     confianca: 100
@@ -579,30 +608,57 @@ export async function registerAccessDenied(plate) {
 }
 
 export async function fetchCameras() {
-  const { data, error } = await db
+  let { data, error } = await db
     .from("cameras")
-    .select("id, nome, localizacao, tipo_camera_id, tipos_camera(descricao)")
+    .select("id, nome, localizacao, tipo_camera_id, porta_usb, tipos_camera(descricao)")
     .eq("estabelecimento_id", ESTAB_ID)
     .eq("ativo", true);
+  let hasGatePortColumn = true;
+
+  if (error && isMissingColumnError(error, "porta_usb")) {
+    hasGatePortColumn = false;
+    const fallback = await db
+      .from("cameras")
+      .select("id, nome, localizacao, tipo_camera_id, tipos_camera(descricao)")
+      .eq("estabelecimento_id", ESTAB_ID)
+      .eq("ativo", true);
+    data = fallback.data;
+    error = fallback.error;
+  }
+
   if (error) throw error;
+  const savedPorts = hasGatePortColumn ? {} : loadCameraGatePorts();
 
   return (data || []).map((camera) => ({
     id: camera.id,
     nome: camera.nome,
     localizacao: camera.localizacao || "-",
     tipo_camera_id: String(camera.tipo_camera_id || 1),
+    porta_usb: camera.porta_usb || savedPorts[camera.id] || "",
     tipo: camera.tipos_camera?.descricao || "-"
   }));
 }
 
 export async function saveCamera(payload) {
-  const { error } = await db.from("cameras").insert({
+  const insertPayload = {
     nome: payload.nome,
     localizacao: payload.localizacao,
     tipo_camera_id: Number.parseInt(payload.tipo_camera_id, 10),
+    porta_usb: payload.porta_usb || null,
     estabelecimento_id: ESTAB_ID
-  });
+  };
+
+  let { data, error } = await db.from("cameras").insert(insertPayload).select("id").single();
+
+  if (error && isMissingColumnError(error, "porta_usb")) {
+    const { porta_usb, ...fallbackPayload } = insertPayload;
+    const fallback = await db.from("cameras").insert(fallbackPayload).select("id").single();
+    data = fallback.data;
+    error = fallback.error;
+  }
+
   if (error) throw error;
+  saveCameraGatePort(data?.id, payload.porta_usb);
 }
 
 export async function deleteCamera(cameraId) {
@@ -611,12 +667,23 @@ export async function deleteCamera(cameraId) {
 }
 
 export async function updateCamera(cameraId, payload) {
-  const { error } = await db.from("cameras").update({
+  const updatePayload = {
     nome: payload.nome,
     localizacao: payload.localizacao,
-    tipo_camera_id: Number.parseInt(payload.tipo_camera_id, 10)
-  }).eq("id", cameraId);
+    tipo_camera_id: Number.parseInt(payload.tipo_camera_id, 10),
+    porta_usb: payload.porta_usb || null
+  };
+
+  let { error } = await db.from("cameras").update(updatePayload).eq("id", cameraId);
+
+  if (error && isMissingColumnError(error, "porta_usb")) {
+    const { porta_usb, ...fallbackPayload } = updatePayload;
+    const fallback = await db.from("cameras").update(fallbackPayload).eq("id", cameraId);
+    error = fallback.error;
+  }
+
   if (error) throw error;
+  saveCameraGatePort(cameraId, payload.porta_usb);
 }
 
 export async function fetchAuthorizations() {

@@ -4,11 +4,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 
+from pydantic import BaseModel
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from pipeline import load_models, detect
 from arduino import conectar_arduino, fechar_arduino, abrir_cancela, arduino_conectado
+
+try:
+    from serial.tools import list_ports
+except ImportError:
+    list_ports = None
 
 load_dotenv()
 
@@ -24,6 +30,11 @@ PORT             = int(os.getenv("PORT",                "8000"))
 ARDUINO_PORT     = os.getenv("ARDUINO_PORT",            "COM5")
 ARDUINO_BAUD     = int(os.getenv("ARDUINO_BAUD",        "9600"))
 GATE_OPEN_SECONDS = float(os.getenv("GATE_OPEN_SECONDS", "5"))
+
+
+class OpenGateRequest(BaseModel):
+    porta_usb: str | None = None
+    baud: int | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -83,13 +94,30 @@ async def detect_plate(file: UploadFile = File(...)):
     }
 
 
+@app.get("/api/serial-ports")
+def serial_ports():
+    if list_ports is None:
+        return {"ports": []}
+
+    ports = []
+    for port in list_ports.comports():
+        ports.append({
+            "device": port.device,
+            "description": port.description or port.device,
+            "hwid": port.hwid or "",
+        })
+    return {"ports": ports}
+
+
 @app.post("/api/open-gate")
-async def open_gate():
+async def open_gate(payload: OpenGateRequest | None = None):
     """Aciona o Arduino para abrir a cancela/portão."""
-    abrir_cancela(GATE_OPEN_SECONDS)
+    porta_usb = payload.porta_usb.strip() if payload and payload.porta_usb else None
+    abrir_cancela(GATE_OPEN_SECONDS, porta=porta_usb, baud=payload.baud if payload else None)
     connected = arduino_conectado()
-    print(f"[GateVision] Abertura manual solicitada. Arduino conectado: {connected}")
-    return {"ok": True, "arduino": connected}
+    gate_label = porta_usb or ARDUINO_PORT
+    print(f"[GateVision] Abertura solicitada no portao {gate_label}. Arduino conectado: {connected}")
+    return {"ok": True, "arduino": connected, "porta_usb": gate_label}
 
 
 if __name__ == "__main__":

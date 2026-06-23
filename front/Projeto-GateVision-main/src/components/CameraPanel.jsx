@@ -30,7 +30,7 @@ function statusImage(detection, decision) {
   return <div className="status-empty">Placa identificada. Escolha liberar ou negar acesso.</div>;
 }
 
-export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }) {
+export default function CameraPanel({ camera = null, panelName, gatePort = "", backendUrl, onToast, onRemove }) {
   const [detection, setDetection] = useState(null);
   const [decision, setDecision] = useState(null);
   const [manualPlate, setManualPlate] = useState("");
@@ -226,7 +226,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
 
   async function openGate(detected, autoTriggered = false, ocrConf = null) {
     if (!detected) return;
-    await registerAccessOpen(detected.placa, ocrConf);
+    await registerAccessOpen(detected.placa, ocrConf, camera?.id);
     if (!mountedRef.current) return; // FIX 1
     setDecision("liberado");
     scheduleMonitorReset(AUTO_READY_DELAY_MS);
@@ -235,7 +235,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
       "ok"
     );
     try {
-      await triggerGate(backendUrl);
+      await triggerGate(backendUrl, gatePort);
     } catch (error) {
       console.warn("open-gate indisponível:", error);
     }
@@ -465,7 +465,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
   async function handleDeny() {
     if (!detection) return;
     try {
-      await registerAccessDenied(detection.placa);
+      await registerAccessDenied(detection.placa, camera?.id);
       if (!mountedRef.current) return; // FIX 1
       setDecision("negado");
       scheduleMonitorReset();
@@ -498,6 +498,7 @@ export default function CameraPanel({ panelName, backendUrl, onToast, onRemove }
         <div className="camera-panel-title">
           <span className="eyebrow" style={{ marginBottom: 0 }}>Câmera</span>
           <strong className="camera-panel-name">{panelName}</strong>
+          <span className="camera-panel-gate">Portao: {gatePort || "Sem porta USB"}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div className="camera-panel-chip">{currentChip}</div>

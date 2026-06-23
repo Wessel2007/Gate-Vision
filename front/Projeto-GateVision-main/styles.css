@@ -1120,6 +1120,7 @@ html[data-theme="light"] .modal-card {
 
 .multi-monitor-grid {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
   gap: 16px;
   align-items: start;
 }
@@ -1164,6 +1165,12 @@ html[data-theme="light"] .modal-card {
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
+}
+
+.camera-panel-gate {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .camera-panel-chip {
