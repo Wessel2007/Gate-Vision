@@ -250,8 +250,10 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       autoTriggered ? "Placa autorizada. Portão aberto automaticamente." : "Portão aberto pelo porteiro.",
       "ok"
     );
-    await registerAccessOpen(detected.placa, ocrConf, camera?.id);
-    if (!mountedRef.current) return; // FIX 1
+    void registerAccessOpen(detected.placa, ocrConf, camera?.id).catch((error) => {
+      console.warn("Falha ao registrar abertura:", error);
+      if (mountedRef.current) onToast(`Erro ao registrar abertura: ${error.message}`);
+    });
     try {
       await triggerGate(backendUrl, gatePort);
     } catch (error) {
