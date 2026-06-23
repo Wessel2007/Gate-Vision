@@ -11,7 +11,8 @@ import { buildStatusIllustration, formatCPF, onlyPlate } from "../lib/utils";
 const VOTE_WINDOW = 4;
 const CONFIRM_VOTES = 1;
 const OCR_MIN_CONF = 0.72;
-const AUTO_READY_DELAY_MS = 3000;
+const DECISION_COOLDOWN_MS = 5000;
+const AUTO_READY_DELAY_MS = DECISION_COOLDOWN_MS;
 const DUPLICATE_SCAN_DELAY_MS = 3000;
 const CLEAR_APPROVED_PLATE_FRAMES = 3;
 
@@ -51,6 +52,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
   const stableFrameCountRef = useRef(0);
   const resetTimerRef = useRef(null);
   const duplicateScanTimerRef = useRef(null);
+  const decisionCooldownUntilRef = useRef(0);
   const plateVoteBufferRef = useRef([]);
   const autoStartAttemptedRef = useRef(false);
   // FIX 1: guard against setState after unmount (panel removal)
@@ -134,6 +136,15 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
     plateVoteBufferRef.current = [];
   }
 
+  function isDecisionCooldownActive() {
+    return Date.now() < decisionCooldownUntilRef.current;
+  }
+
+  function startDecisionCooldown() {
+    decisionCooldownUntilRef.current = Date.now() + DECISION_COOLDOWN_MS;
+    setProcessingLabel("Aguardando 5 segundos para nova leitura...");
+  }
+
   function addVote(placa) {
     const buffer = plateVoteBufferRef.current;
     const lastPlate = buffer.length > 0 ? buffer[buffer.length - 1] : null;
@@ -161,7 +172,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       if (!mountedRef.current) return; // FIX 1
       clearMonitorState();
       resetTimerRef.current = null;
-    }, 20000);
+    }, delayMs);
   }
 
   function resetStabilityTracking() {
@@ -229,6 +240,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
     await registerAccessOpen(detected.placa, ocrConf, camera?.id);
     if (!mountedRef.current) return; // FIX 1
     setDecision("liberado");
+    startDecisionCooldown();
     scheduleMonitorReset(AUTO_READY_DELAY_MS);
     onToast(
       autoTriggered ? "Placa autorizada. Portão aberto automaticamente." : "Portão aberto pelo porteiro.",
@@ -243,6 +255,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
 
   async function processPlate(plate, autoOpen = true, ocrConf = null) {
     const clean = onlyPlate(plate);
+    if (isDecisionCooldownActive()) return;
     if (clean.length < 7 || detectInFlightRef.current) return;
     if (lastProcessedPlateRef.current === clean && detection?.placa === clean) return;
 
@@ -269,11 +282,17 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
     } finally {
       detectInFlightRef.current = false;
       scheduleDuplicateScanReset();
-      if (mountedRef.current) setProcessingLabel(""); // FIX 1
+      if (mountedRef.current) {
+        setProcessingLabel(isDecisionCooldownActive() ? "Aguardando 5 segundos para nova leitura..." : "");
+      } // FIX 1
     }
   }
 
   async function processImage(file, fromWebcam = false) {
+    if (isDecisionCooldownActive()) {
+      if (mountedRef.current) setProcessingLabel("Aguardando 5 segundos para nova leitura...");
+      return;
+    }
     if (ocrInFlightRef.current) return;
     ocrInFlightRef.current = true;
     if (!fromWebcam && mountedRef.current) {
@@ -334,6 +353,8 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       if (!mountedRef.current) return; // FIX 1
       if (!fromWebcam) {
         setProcessingLabel("");
+      } else if (isDecisionCooldownActive()) {
+        setProcessingLabel("Aguardando 5 segundos para nova leitura...");
       } else if (!detectInFlightRef.current && streamRef.current) {
         // FIX 4: use streamRef (always current) instead of webcamActive state (stale closure)
         setProcessingLabel("Aguardando nova placa...");
@@ -439,6 +460,10 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
   }
 
   async function captureAndDetect(silent = false) {
+    if (isDecisionCooldownActive()) {
+      if (!silent) setProcessingLabel("Aguardando 5 segundos para nova leitura...");
+      return;
+    }
     if (!videoRef.current || !streamRef.current) {
       if (!silent) onToast("Webcam não está ativa.");
       return;
@@ -468,7 +493,8 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       await registerAccessDenied(detection.placa, camera?.id);
       if (!mountedRef.current) return; // FIX 1
       setDecision("negado");
-      scheduleMonitorReset();
+      startDecisionCooldown();
+      scheduleMonitorReset(DECISION_COOLDOWN_MS);
       onToast("Acesso negado registrado.", "ok");
     } catch (error) {
       onToast(`Erro ao registrar negação: ${error.message}`);
@@ -478,6 +504,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
   async function handleManualInputChange(event) {
     const clean = onlyPlate(event.target.value);
     setManualPlate(clean);
+    if (isDecisionCooldownActive()) return;
     if (clean.length < 7) { resetProcessedPlate(); return; }
     await processPlate(clean, true);
   }
