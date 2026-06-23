@@ -124,6 +124,11 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
     framesWithoutPlateRef.current = 0;
   }
 
+  function ignoreHandledPlate(plate) {
+    ignoredApprovedPlateRef.current = onlyPlate(plate);
+    framesWithoutPlateRef.current = 0;
+  }
+
   function scheduleDuplicateScanReset() {
     if (duplicateScanTimerRef.current) clearTimeout(duplicateScanTimerRef.current);
     duplicateScanTimerRef.current = window.setTimeout(() => {
@@ -237,8 +242,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
 
   async function openGate(detected, autoTriggered = false, ocrConf = null) {
     if (!detected) return;
-    await registerAccessOpen(detected.placa, ocrConf, camera?.id);
-    if (!mountedRef.current) return; // FIX 1
+    ignoreHandledPlate(detected.placa);
     setDecision("liberado");
     startDecisionCooldown();
     scheduleMonitorReset(AUTO_READY_DELAY_MS);
@@ -246,6 +250,8 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       autoTriggered ? "Placa autorizada. Portão aberto automaticamente." : "Portão aberto pelo porteiro.",
       "ok"
     );
+    await registerAccessOpen(detected.placa, ocrConf, camera?.id);
+    if (!mountedRef.current) return; // FIX 1
     try {
       await triggerGate(backendUrl, gatePort);
     } catch (error) {
@@ -271,8 +277,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
       if (!mountedRef.current) return; // FIX 1
       setDetection(nextDetection);
       if (autoOpen && nextDetection.status === "autorizado") {
-        ignoredApprovedPlateRef.current = clean;
-        framesWithoutPlateRef.current = 0;
+        ignoreHandledPlate(clean);
         await openGate(nextDetection, true, ocrConf);
       }
     } catch (error) {
@@ -303,6 +308,7 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
 
     try {
       const result = await detectPlateFromBackend(backendUrl, file);
+      if (isDecisionCooldownActive()) return;
 
       if (!result.placa) {
         if (fromWebcam && ignoredApprovedPlateRef.current) {
@@ -489,12 +495,14 @@ export default function CameraPanel({ camera = null, panelName, gatePort = "", b
 
   async function handleDeny() {
     if (!detection) return;
+    const deniedPlate = detection.placa;
+    ignoreHandledPlate(deniedPlate);
+    setDecision("negado");
+    startDecisionCooldown();
+    scheduleMonitorReset(DECISION_COOLDOWN_MS);
     try {
-      await registerAccessDenied(detection.placa, camera?.id);
+      await registerAccessDenied(deniedPlate, camera?.id);
       if (!mountedRef.current) return; // FIX 1
-      setDecision("negado");
-      startDecisionCooldown();
-      scheduleMonitorReset(DECISION_COOLDOWN_MS);
       onToast("Acesso negado registrado.", "ok");
     } catch (error) {
       onToast(`Erro ao registrar negação: ${error.message}`);
